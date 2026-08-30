@@ -30,7 +30,8 @@ Suckless-style: everything is configured in `config.h` and compiled in.
 
 ```sh
 make            # ./hweb + ./hweb-ext.so (needs libwebkit2gtk41-devel; fzf at runtime)
-make install    # symlinks hweb into ~/.local/bin (the .so stays here)
+make install    # symlinks hweb into ~/.local/bin (the .so stays here), installs
+                # hweb.desktop and makes hweb the xdg default browser
 make clean
 ```
 

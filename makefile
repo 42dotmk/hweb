@@ -11,6 +11,7 @@ WKLIBS  != pkg-config --libs webkit2gtk-4.1
 EXFLAGS != pkg-config --cflags webkit2gtk-web-extension-4.1 | sed 's/-I/-isystem /g'
 EXLIBS  != pkg-config --libs webkit2gtk-web-extension-4.1
 BINDIR  = $(HOME)/.local/bin
+APPDIR  = $(HOME)/.local/share/applications
 
 all: hweb hweb-ext.so
 
@@ -23,11 +24,14 @@ hweb-ext.so: hweb-ext.c
 	$(CC) $(CFLAGS) $(EXFLAGS) -shared -fPIC -o $@ hweb-ext.c $(EXLIBS)
 
 install: all
-	mkdir -p $(BINDIR)
+	mkdir -p $(BINDIR) $(APPDIR)
 	ln -sf "$$(pwd)/hweb" $(BINDIR)/hweb
+	sed "s|^Exec=hweb|Exec=$(BINDIR)/hweb|" hweb.desktop > $(APPDIR)/hweb.desktop
+	update-desktop-database $(APPDIR) 2>/dev/null || true
+	xdg-settings set default-web-browser hweb.desktop
 
 uninstall:
-	rm -f $(BINDIR)/hweb
+	rm -f $(BINDIR)/hweb $(APPDIR)/hweb.desktop
 
 clean:
 	rm -f hweb hweb-ext.so
