@@ -2,39 +2,17 @@
 
 /* what servers see: user agent + extra request headers. The headers are
  * applied to every HTTP request by the web-process extension
- * (hweb-ext.c); an empty value removes the header instead. Keep the
- * Chrome version in sync across useragent, headers and spoofjs. */
+ * (hweb-ext.c); an empty value removes the header instead. */
 static const char *useragent =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.4 Safari/605.1.15";
 static const struct header {
     const char *name, *value;
 } headers[] = {
-    {"Sec-CH-UA", "\"Google Chrome\";v=\"151\", \"Chromium\";v=\"151\", "
-                  "\"Not_A Brand\";v=\"24\""},
-    {"Sec-CH-UA-Mobile", "?0"},
-    {"Sec-CH-UA-Platform", "\"macOS\""},
     {"Accept-Language", "en-US,en;q=0.9"},
 };
 static const char *languages[] = {"en-US", "en",
                                   NULL}; /* navigator.languages */
-
-/* runs in every page before its own scripts (main world): make the JS side
- * agree with the user agent. */
-static const char *spoofjs =
-    "(function(){var d=(o,k,v)=>Object.defineProperty(o,k,{get:()=>v,"
-    "configurable:true});"
-    "d(Navigator.prototype,'platform','MacIntel');"
-    "d(Navigator.prototype,'vendor','Google Inc.');"
-    "var b=[{brand:'Google Chrome',version:'151'},{brand:'Chromium',"
-    "version:'151'},{brand:'Not_A Brand',version:'24'}];"
-    "d(Navigator.prototype,'userAgentData',{brands:b,mobile:false,"
-    "platform:'macOS',getHighEntropyValues:()=>Promise.resolve({brands:b,"
-    "mobile:false,platform:'macOS',platformVersion:'15.0.0',architecture:"
-    "'x86',bitness:'64',model:'',uaFullVersion:'151.0.0.0'}),"
-    "toJSON(){return{brands:b,mobile:false,platform:'macOS'}}});"
-    "window.chrome={runtime:{},app:{},loadTimes:function(){},csi:function(){}};"
-    "})();";
 
 /* window title, so windows are searchable by page title and url in
  * hmenu/hws: %s = page title, second %s = url */

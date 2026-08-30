@@ -19,8 +19,8 @@ Two source files:
 - `hweb-ext.c` — a WebKit web-process extension (`hweb-ext.so`) that
   rewrites request headers. WebKit only lets headers be changed from
   inside the web process, so this is the only way to make every request
-  carry the Chrome/macOS `Sec-CH-UA*` / `Accept-Language` headers from
-  `config.h`. hweb finds the `.so` next to its own binary (`/proc/self/exe`
+  carry the extra headers from `config.h` (`Accept-Language`; the browser
+  otherwise presents its real WebKit identity — no Chrome spoofing). hweb finds the `.so` next to its own binary (`/proc/self/exe`
   resolved through the `~/.local/bin` symlink), and hands it the header
   table as initialization user data, so only `hweb.c` includes `config.h`.
 
@@ -69,10 +69,9 @@ in the `js` event on stdout.
   `webkit.messageHandlers.hweb.postMessage(...)`), `new`, `popup`, `yank`, `inject`,
   `download started|finished`. When stdin is not a tty each line read from
   it is run as a command, so `hweb URL < cmds > events` scripts the browser.
-- **Injection** — `spoofjs` (page world, document start) makes
-  `navigator` agree with the user agent; `corejs` (isolated world `hweb`,
-  document start) is the insert-mode detector and hint machinery, reached
-  from C via `js("hweb", ...)`. Every `*.js` in `scriptdir` is injected into
+- **Injection** — `corejs` (isolated world `hweb`, document start) is the
+  insert-mode detector and hint machinery, reached from C via
+  `js("hweb", ...)`. Every `*.js` in `scriptdir` is injected into
   every page at document end, page world; `inject FILE` adds one at
   runtime (and runs it now). `js CODE` evaluates in the page world.
 - **Debugging** — `gd` / `:inspect` toggles the WebKit inspector

@@ -920,11 +920,6 @@ static void setup(void) {
         WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, "hweb", NULL, NULL);
     webkit_user_content_manager_add_script(ucm, us);
     webkit_user_script_unref(us);
-    us = webkit_user_script_new(spoofjs, WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
-                                WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
-                                NULL, NULL);
-    webkit_user_content_manager_add_script(ucm, us);
-    webkit_user_script_unref(us);
 
     view = g_object_new(WEBKIT_TYPE_WEB_VIEW, "web-context", context(),
                         "user-content-manager", ucm, NULL);
@@ -934,6 +929,10 @@ static void setup(void) {
     webkit_settings_set_enable_smooth_scrolling(st, TRUE);
     webkit_settings_set_enable_write_console_messages_to_stdout(st, consolelog);
     webkit_settings_set_javascript_can_access_clipboard(st, TRUE);
+    /* sites open OAuth popups outside the click's gesture stack (e.g.
+     * Google Identity Services after a cross-origin iframe postMessage);
+     * without this WebKit drops those without ever emitting ::create */
+    webkit_settings_set_javascript_can_open_windows_automatically(st, TRUE);
 
     g_signal_connect(view, "load-changed", G_CALLBACK(loadchanged), NULL);
     g_signal_connect(view, "load-failed", G_CALLBACK(loadfailed), NULL);
