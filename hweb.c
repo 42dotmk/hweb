@@ -712,12 +712,52 @@ static void hover(WebKitWebView *v, WebKitHitTestResult *h, guint mods,
     ev("hover %s", hoveruri ? hoveruri : "");
 }
 
-/* window.open / target=_blank: new hweb process */
+/* scripted popups (window.open): same-process windows related to their
+ * opener, so window.opener/postMessage work and OAuth flows can hand
+ * their result back. A bare webview in a plain window: no status bar,
+ * no keymap, closes on window.close(). */
+static void popupclose(WebKitWebView *pv, gpointer w) {
+    (void)pv;
+    gtk_widget_destroy(GTK_WIDGET(w));
+}
+
+static void popupready(WebKitWebView *pv, gpointer w) {
+    (void)pv;
+    gtk_widget_show_all(GTK_WIDGET(w));
+}
+
+static void popuptitle(GObject *o, GParamSpec *p, gpointer w) {
+    const char *t = webkit_web_view_get_title(WEBKIT_WEB_VIEW(o));
+    (void)p;
+    gtk_window_set_title(GTK_WINDOW(w), t && *t ? t : "hweb");
+}
+
+/* new-window requests: a real click gets its own hweb process, a
+ * scripted window.open gets an opener-linked popup in this one */
 static GtkWidget *create(WebKitWebView *v, WebKitNavigationAction *a,
                          gpointer data) {
-    (void)v, (void)data;
-    spawn(webkit_uri_request_get_uri(webkit_navigation_action_get_request(a)));
-    return NULL;
+    GtkWidget *w, *pv;
+    (void)data;
+
+    if (webkit_navigation_action_get_mouse_button(a)) {
+        spawn(webkit_uri_request_get_uri(
+            webkit_navigation_action_get_request(a)));
+        return NULL;
+    }
+    pv = webkit_web_view_new_with_related_view(v);
+    webkit_web_view_set_settings(WEBKIT_WEB_VIEW(pv),
+                                 webkit_web_view_get_settings(v));
+    w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_default_size(GTK_WINDOW(w), 600, 700);
+    gtk_window_set_role(GTK_WINDOW(w), "popup");
+    gtk_window_set_transient_for(GTK_WINDOW(w), GTK_WINDOW(win));
+    gtk_container_add(GTK_CONTAINER(w), pv);
+    g_signal_connect(pv, "ready-to-show", G_CALLBACK(popupready), w);
+    g_signal_connect(pv, "close", G_CALLBACK(popupclose), w);
+    g_signal_connect(pv, "notify::title", G_CALLBACK(popuptitle), w);
+    ev("popup %s",
+       webkit_uri_request_get_uri(webkit_navigation_action_get_request(a)));
+    return pv;
 }
 
 static gboolean policy(WebKitWebView *v, WebKitPolicyDecision *d,
@@ -742,10 +782,15 @@ static gboolean policy(WebKitWebView *v, WebKitPolicyDecision *d,
         WebKitNavigationAction *a =
             webkit_navigation_policy_decision_get_navigation_action(
                 WEBKIT_NAVIGATION_POLICY_DECISION(d));
-        spawn(webkit_uri_request_get_uri(
-            webkit_navigation_action_get_request(a)));
-        webkit_policy_decision_ignore(d);
-        return TRUE;
+        /* clicks get their own process; scripted requests fall through
+         * to the default policy so ::create makes an opener popup */
+        if (webkit_navigation_action_get_mouse_button(a)) {
+            spawn(webkit_uri_request_get_uri(
+                webkit_navigation_action_get_request(a)));
+            webkit_policy_decision_ignore(d);
+            return TRUE;
+        }
+        return FALSE;
     }
     if (t == WEBKIT_POLICY_DECISION_TYPE_RESPONSE &&
         !webkit_response_policy_decision_is_mime_type_supported(

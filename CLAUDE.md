@@ -66,7 +66,7 @@ in the `js` event on stdout.
 - **Events** — one line per event on stdout: `mode`, `load
   started|committed|finished|failed`, `title`, `uri`, `hover`, `js RESULT`,
   `msg TEXT` (from page or injected JS calling
-  `webkit.messageHandlers.hweb.postMessage(...)`), `new`, `yank`, `inject`,
+  `webkit.messageHandlers.hweb.postMessage(...)`), `new`, `popup`, `yank`, `inject`,
   `download started|finished`. When stdin is not a tty each line read from
   it is run as a command, so `hweb URL < cmds > events` scripts the browser.
 - **Injection** — `spoofjs` (page world, document start) makes
@@ -81,9 +81,13 @@ in the `js` event on stdout.
   exposes the remote inspector protocol.
 - **Window title** is `titlefmt` (`title — url`), so pages are found by
   either in `hmenu`'s window list and `hws`. WM_CLASS is `hweb`.
-- **New windows** — `t`/`T`, `F` hints, `target=_blank`, `window.open`,
-  middle-click and ctrl+click all `spawn()` another `hweb` process (from the same
-  directory as the running binary).
+- **New windows** — `t`/`T`, `F` hints, and clicks that ask for a new
+  window (`target=_blank`, middle-click, ctrl+click) `spawn()` another
+  `hweb` process (from the same directory as the running binary). A
+  *scripted* `window.open` instead gets an opener-linked popup in the
+  same process (`create()` in `hweb.c`: a bare webview, no status bar or
+  keymap, closes on `window.close()`), so OAuth popups can reach
+  `window.opener`/`postMessage` and hand their result back.
 - **State** lives in `$XDG_DATA_HOME/hweb` (cookies.sqlite, storage) and
   `$XDG_CACHE_HOME/hweb`; third-party cookies are refused. Downloads go to
   `downloaddir` when a response's mime type cannot be shown.
