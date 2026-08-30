@@ -1,0 +1,5 @@
+hweb
+*.so
+*.o
+.hedlog
+tags
