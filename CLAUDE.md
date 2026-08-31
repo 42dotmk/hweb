@@ -65,8 +65,9 @@ in the `js` event on stdout.
   stdin. `cmd()` in `hweb.c` is the whole list: `open`, `tab`, `back`,
   `forward`, `reload`, `reload!`, `stop`, `quit`, `scroll DX DY`,
   `scrollpage F`, `scrollto N`, `zoom +|-|N`, `find`, `findnext`,
-  `findprev`, `insert`, `normal`, `hint open|new|yank`, `js CODE`,
-  `inject FILE`, `inspect`, `yank [URL]`, `prompt TEXT`, `echo`, `title`,
+  `findprev`, `insert`, `normal`, `hint open|new|yank|download`, `js CODE`,
+  `inject FILE`, `inspect`, `yank [URL]`, `download [URL]` (to
+  `downloaddir`; the page itself without URL), `prompt TEXT`, `echo`, `title`,
   `blockupdate` (runs the `blockupdate` shell snippet from `config.h`,
   which refetches the blocklist, and shows its output).
   Keymap commands expand `%u` (url), `%t` (title), `%c` (clipboard).

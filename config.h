@@ -39,7 +39,7 @@ static const char *searchurl = "https://duckduckgo.com/?q=%s";
 /* every *.js in this directory is injected into every page (document end,
  * main world); "inject FILE" adds more at runtime */
 static const char *scriptdir = "~/.config/hweb/scripts";
-static const char *downloaddir = "~/Downloads";
+static const char *downloaddir = "~/downloads";
 /* visited pages are appended to $XDG_DATA_HOME/hweb/history as
  * "url<TAB>title"; Tab after `:open `/`:tab ` completes from it through this
  * shell snippet ($1 = history file, $2 = typed query), which must print
@@ -96,6 +96,7 @@ static const struct key {
     {"f", "hint open"},
     {"F", "hint new"},
     {"gf", "hint yank"},
+    {"gD", "hint download"},
     {"gi", "js (document.querySelector('input:not([type=hidden]),"
            "textarea')||{focus(){}}).focus()"},
     {"/", "prompt /"},
@@ -104,6 +105,7 @@ static const struct key {
     {"i", "insert"},
     {":", "prompt :"},
     {"yy", "yank"},
+    {"<C-s>", "download %u"},
     {"p", "open %c"},
     {"P", "tab %c"},
     {"+", "zoom +"},

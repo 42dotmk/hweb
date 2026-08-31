@@ -34,11 +34,11 @@ static int compquiet;     /* entry changes made by completion itself */
 static char *histpending; /* loaded url still waiting for its title */
 /* every verb cmd() understands, for : completion */
 static const char *cmdnames[] = {
-    "open",  "tab",        "back",     "forward",    "reload",   "reload!",
-    "stop",  "quit",       "scroll",   "scrollpage", "scrollto", "zoom",
-    "find",  "findnext",   "findprev", "insert",     "normal",   "hint",
-    "js",    "inject",     "inspect",  "yank",       "prompt",   "echo",
-    "title", "blockupdate"};
+    "open", "tab",      "back",       "forward",    "reload",   "reload!",
+    "stop", "quit",     "scroll",     "scrollpage", "scrollto", "zoom",
+    "find", "findnext", "findprev",   "insert",     "normal",   "hint",
+    "js",   "inject",   "inspect",    "yank",       "download", "prompt",
+    "echo", "title",    "blockupdate"};
 static char exedir[4096];
 
 /* internal scripts, isolated world "hweb": insert-mode tracking and the
@@ -454,6 +454,10 @@ static void cmd(const char *line) {
             setstatus("yanked");
             ev("yank %s", u);
         }
+    } else if (!strcmp(verb, "download")) {
+        const char *u = *arg ? arg : webkit_web_view_get_uri(v);
+        if (u)
+            webkit_web_view_download_uri(v, u);
     } else if (!strcmp(verb, "prompt")) {
         prompt(arg);
     } else if (!strcmp(verb, "echo")) {
@@ -628,11 +632,10 @@ static void message(WebKitUserContentManager *m, WebKitJavascriptResult *r,
             setmode(NORMAL);
         if (!strncmp(rest, "new ", 4) && rest[4])
             spawn(rest + 4);
-        else if (!strncmp(rest, "yank ", 5) && rest[5]) {
-            char buf[4096];
-            snprintf(buf, sizeof buf, "yank %s", rest + 5);
-            cmd(buf);
-        } else if (!strcmp(rest, "none"))
+        else if ((!strncmp(rest, "yank ", 5) && rest[5]) ||
+                 (!strncmp(rest, "download ", 9) && rest[9]))
+            cmd(rest); /* the hint action is the command verb */
+        else if (!strcmp(rest, "none"))
             setstatus("no hints");
     } else
         ev("msg %s", s);
