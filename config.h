@@ -14,6 +14,21 @@ static const struct header {
 static const char *languages[] = {"en-US", "en",
                                   NULL}; /* navigator.languages */
 
+/* ad/tracker blocking: every request to a host listed in this file, or to
+ * a subdomain of one, is cancelled by the extension before it is sent
+ * (reported as a `blocked URL` event). One host per line; the hosts-file
+ * format (`0.0.0.0 host`) is accepted too, so a list like
+ *   curl -o ~/.local/share/hweb/blocklist \
+ *        https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+ * works as is. Hosts without a dot (localhost...) are ignored. */
+static const char *blocklist = "~/.local/share/hweb/blocklist";
+/* `blockupdate` runs this shell snippet ($1 = blocklist file) and shows
+ * its output; the new list is picked up by windows opened afterwards */
+static const char *blockupdate =
+    "curl -sSf -o \"$1\" "
+    "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts "
+    "&& echo \"$(grep -c . \"$1\") lines\"";
+
 /* window title, so windows are searchable by page title and url in
  * hmenu/hws: %s = page title, second %s = url */
 static const char *titlefmt = "%s \xe2\x80\x94 %s";

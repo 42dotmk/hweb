@@ -34,11 +34,11 @@ static int compquiet;     /* entry changes made by completion itself */
 static char *histpending; /* loaded url still waiting for its title */
 /* every verb cmd() understands, for : completion */
 static const char *cmdnames[] = {
-    "open",     "tab",    "back",   "forward",  "reload",
-    "reload!",  "stop",   "quit",   "scroll",   "scrollpage",
-    "scrollto", "zoom",   "find",   "findnext", "findprev",
-    "insert",   "normal", "hint",   "js",       "inject",
-    "inspect",  "yank",   "prompt", "echo",     "title"};
+    "open",  "tab",        "back",     "forward",    "reload",   "reload!",
+    "stop",  "quit",       "scroll",   "scrollpage", "scrollto", "zoom",
+    "find",  "findnext",   "findprev", "insert",     "normal",   "hint",
+    "js",    "inject",     "inspect",  "yank",       "prompt",   "echo",
+    "title", "blockupdate"};
 static char exedir[4096];
 
 /* internal scripts, isolated world "hweb": insert-mode tracking and the
@@ -462,6 +462,19 @@ static void cmd(const char *line) {
         const char *t = webkit_web_view_get_title(v);
         ev("title %s", t ? t : "");
         ev("uri %s", webkit_web_view_get_uri(v));
+    } else if (!strcmp(verb, "blockupdate")) {
+        char *path = expandhome(blocklist), *out = NULL, *err = NULL;
+        const char *argv[] = {"/bin/sh", "-c", blockupdate, "sh", path, NULL};
+        const char *msg = "";
+        g_spawn_sync(NULL, (char **)argv, NULL, G_SPAWN_DEFAULT, NULL, NULL,
+                     &out, &err, NULL, NULL);
+        if (out && *g_strstrip(out))
+            msg = out;
+        else if (err)
+            msg = g_strstrip(err);
+        ev("blockupdate %s", msg);
+        setstatus(msg);
+        g_free(out), g_free(err), g_free(path);
     } else {
         char buf[128];
         snprintf(buf, sizeof buf, "unknown command: %s", verb);
@@ -866,6 +879,17 @@ static void loadscripts(void) {
     g_free(dir);
 }
 
+/* messages from the extension: "blocked" carries the url of a cancelled
+ * request */
+static gboolean usermessage(WebKitWebView *v, WebKitUserMessage *m,
+                            gpointer data) {
+    (void)v, (void)data;
+    if (!strcmp(webkit_user_message_get_name(m), "blocked"))
+        ev("blocked %s",
+           g_variant_get_string(webkit_user_message_get_parameters(m), NULL));
+    return TRUE;
+}
+
 static WebKitWebContext *context(void) {
     char *data = g_build_filename(g_get_user_data_dir(), "hweb", NULL);
     char *cache = g_build_filename(g_get_user_cache_dir(), "hweb", NULL);
@@ -876,6 +900,7 @@ static WebKitWebContext *context(void) {
         webkit_web_context_new_with_website_data_manager(dm);
     WebKitCookieManager *cm = webkit_web_context_get_cookie_manager(ctx);
     GVariantBuilder b;
+    char *bl;
     size_t i;
 
     g_mkdir_with_parents(data, 0700);
@@ -890,11 +915,12 @@ static WebKitWebContext *context(void) {
     for (i = 0; i < sizeof headers / sizeof *headers; i++)
         g_variant_builder_add(&b, "(ss)", headers[i].name, headers[i].value);
     webkit_web_context_set_web_extensions_directory(ctx, exedir);
+    bl = expandhome(blocklist);
     webkit_web_context_set_web_extensions_initialization_user_data(
-        ctx, g_variant_builder_end(&b));
+        ctx, g_variant_new("(@a(ss)s)", g_variant_builder_end(&b), bl));
     g_signal_connect(ctx, "download-started", G_CALLBACK(dlstarted), NULL);
 
-    g_free(data), g_free(cache), g_free(cookies);
+    g_free(data), g_free(cache), g_free(cookies), g_free(bl);
     return ctx;
 }
 
@@ -934,6 +960,8 @@ static void setup(void) {
      * without this WebKit drops those without ever emitting ::create */
     webkit_settings_set_javascript_can_open_windows_automatically(st, TRUE);
 
+    g_signal_connect(view, "user-message-received", G_CALLBACK(usermessage),
+                     NULL);
     g_signal_connect(view, "load-changed", G_CALLBACK(loadchanged), NULL);
     g_signal_connect(view, "load-failed", G_CALLBACK(loadfailed), NULL);
     g_signal_connect(view, "notify::estimated-load-progress",

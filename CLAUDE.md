@@ -16,13 +16,22 @@ Two source files:
   once the title arrives), and `histmatch()`, which runs `histfilter` from
   `config.h` (`tac FILE | fzf --filter QUERY`) over it and drops repeated
   urls, newest first.
-- `hweb-ext.c` — a WebKit web-process extension (`hweb-ext.so`) that
-  rewrites request headers. WebKit only lets headers be changed from
-  inside the web process, so this is the only way to make every request
-  carry the extra headers from `config.h` (`Accept-Language`; the browser
-  otherwise presents its real WebKit identity — no Chrome spoofing). hweb finds the `.so` next to its own binary (`/proc/self/exe`
+- `hweb-ext.c` — a WebKit web-process extension (`hweb-ext.so`) hooked
+  on every page's `send-request`. It does the two things only the web
+  process can: rewrite request headers (the `headers[]` from `config.h`,
+  e.g. `Accept-Language`; the browser otherwise presents its real WebKit
+  identity — no Chrome spoofing), and cancel requests to blocked hosts.
+  Blocking is host-based, hosts-file style: `blocklist` in `config.h`
+  names a file of hosts (plain or `0.0.0.0 host` lines, so a StevenBlack
+  hosts file works unmodified); a request whose host or any parent
+  domain is listed is cancelled (`send-request` returns TRUE) and
+  reported to the UI process as a `blocked` user message — except the
+  main-frame navigation itself, so blocked sites can still be opened
+  deliberately. `isblocked()` is where a richer (EasyList-style) matcher
+  would go. hweb finds the `.so` next to its own binary (`/proc/self/exe`
   resolved through the `~/.local/bin` symlink), and hands it the header
-  table as initialization user data, so only `hweb.c` includes `config.h`.
+  table and the blocklist path as initialization user data (`(a(ss)s)`),
+  so only `hweb.c` includes `config.h`.
 
 Suckless-style: everything is configured in `config.h` and compiled in.
 
@@ -57,7 +66,9 @@ in the `js` event on stdout.
   `forward`, `reload`, `reload!`, `stop`, `quit`, `scroll DX DY`,
   `scrollpage F`, `scrollto N`, `zoom +|-|N`, `find`, `findnext`,
   `findprev`, `insert`, `normal`, `hint open|new|yank`, `js CODE`,
-  `inject FILE`, `inspect`, `yank [URL]`, `prompt TEXT`, `echo`, `title`.
+  `inject FILE`, `inspect`, `yank [URL]`, `prompt TEXT`, `echo`, `title`,
+  `blockupdate` (runs the `blockupdate` shell snippet from `config.h`,
+  which refetches the blocklist, and shows its output).
   Keymap commands expand `%u` (url), `%t` (title), `%c` (clipboard).
 - **Completion** — Tab in the `:` prompt: on a (partial) verb it lists the
   commands, after `:open `/`:tab ` it lists fuzzy history matches for the
@@ -67,7 +78,8 @@ in the `js` event on stdout.
   started|committed|finished|failed`, `title`, `uri`, `hover`, `js RESULT`,
   `msg TEXT` (from page or injected JS calling
   `webkit.messageHandlers.hweb.postMessage(...)`), `new`, `popup`, `yank`, `inject`,
-  `download started|finished`. When stdin is not a tty each line read from
+  `download started|finished`, `blocked URL` (a request cancelled by the
+  blocklist), `blockupdate OUTPUT`. When stdin is not a tty each line read from
   it is run as a command, so `hweb URL < cmds > events` scripts the browser.
 - **Injection** — `corejs` (isolated world `hweb`, document start) is the
   insert-mode detector and hint machinery, reached from C via
