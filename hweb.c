@@ -776,6 +776,29 @@ static GtkWidget *create(WebKitWebView *v, WebKitNavigationAction *a,
     return pv;
 }
 
+/* mic/camera/screen requests are granted (that is what the device is
+ * for); everything else keeps WebKit's default refusal */
+static gboolean permission(WebKitWebView *v, WebKitPermissionRequest *r,
+                           gpointer data) {
+    (void)v, (void)data;
+    if (WEBKIT_IS_USER_MEDIA_PERMISSION_REQUEST(r)) {
+        WebKitUserMediaPermissionRequest *m =
+            WEBKIT_USER_MEDIA_PERMISSION_REQUEST(r);
+        ev("permission media%s%s%s",
+           webkit_user_media_permission_is_for_audio_device(m) ? " audio" : "",
+           webkit_user_media_permission_is_for_video_device(m) ? " video" : "",
+           webkit_user_media_permission_is_for_display_device(m) ? " display"
+                                                                 : "");
+        webkit_permission_request_allow(r);
+        return TRUE;
+    }
+    if (WEBKIT_IS_DEVICE_INFO_PERMISSION_REQUEST(r)) {
+        webkit_permission_request_allow(r); /* device labels */
+        return TRUE;
+    }
+    return FALSE;
+}
+
 static gboolean policy(WebKitWebView *v, WebKitPolicyDecision *d,
                        WebKitPolicyDecisionType t, gpointer data) {
     (void)v, (void)data;
@@ -962,10 +985,13 @@ static void setup(void) {
      * Google Identity Services after a cross-origin iframe postMessage);
      * without this WebKit drops those without ever emitting ::create */
     webkit_settings_set_javascript_can_open_windows_automatically(st, TRUE);
+    webkit_settings_set_enable_media_stream(st, TRUE);
+    webkit_settings_set_enable_webrtc(st, TRUE); /* needs a WebRTC build */
 
     g_signal_connect(view, "user-message-received", G_CALLBACK(usermessage),
                      NULL);
     g_signal_connect(view, "load-changed", G_CALLBACK(loadchanged), NULL);
+    g_signal_connect(view, "permission-request", G_CALLBACK(permission), NULL);
     g_signal_connect(view, "load-failed", G_CALLBACK(loadfailed), NULL);
     g_signal_connect(view, "notify::estimated-load-progress",
                      G_CALLBACK(progress), NULL);

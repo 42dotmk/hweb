@@ -79,7 +79,8 @@ in the `js` event on stdout.
   started|committed|finished|failed`, `title`, `uri`, `hover`, `js RESULT`,
   `msg TEXT` (from page or injected JS calling
   `webkit.messageHandlers.hweb.postMessage(...)`), `new`, `popup`, `yank`, `inject`,
-  `download started|finished`, `blocked URL` (a request cancelled by the
+  `download started|finished`, `permission media [audio] [video] [display]`
+  (a granted getUserMedia request), `blocked URL` (a request cancelled by the
   blocklist), `blockupdate OUTPUT`. When stdin is not a tty each line read from
   it is run as a command, so `hweb URL < cmds > events` scripts the browser.
 - **Injection** — `corejs` (isolated world `hweb`, document start) is the
