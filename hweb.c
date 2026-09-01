@@ -976,7 +976,6 @@ static void setup(void) {
     view = g_object_new(WEBKIT_TYPE_WEB_VIEW, "web-context", context(),
                         "user-content-manager", ucm, NULL);
     st = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(view));
-    webkit_settings_set_user_agent(st, useragent);
     webkit_settings_set_enable_developer_extras(st, TRUE);
     webkit_settings_set_enable_smooth_scrolling(st, TRUE);
     webkit_settings_set_enable_write_console_messages_to_stdout(st, consolelog);

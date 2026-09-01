@@ -3,9 +3,6 @@
 /* what servers see: user agent + extra request headers. The headers are
  * applied to every HTTP request by the web-process extension
  * (hweb-ext.c); an empty value removes the header instead. */
-static const char *useragent =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) Version/17.4 Safari/605.1.15";
 static const struct header {
     const char *name, *value;
 } headers[] = {
