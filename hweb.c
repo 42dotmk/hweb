@@ -1061,6 +1061,10 @@ int main(int argc, char *argv[]) {
     }
     g_set_prgname("hweb");
     gtk_init(&argc, &argv);
+    /* WM_CLASS: gtk_init capitalises the program name unless --class=NAME
+     * was given; keep it lowercase like the binary */
+    if (!strcmp(gdk_get_program_class(), "Hweb"))
+        gdk_set_program_class("hweb");
     setup();
 
     u = tourl(argc > 1 ? argv[1] : "");
