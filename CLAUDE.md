@@ -104,6 +104,12 @@ in the `js` event on stdout.
 - **State** lives in `$XDG_DATA_HOME/hweb` (cookies.sqlite, storage) and
   `$XDG_CACHE_HOME/hweb`; third-party cookies are refused. Downloads go to
   `downloaddir` when a response's mime type cannot be shown.
+- **Private browsing** — `hweb -p [URL]` or `HWEB_PRIVATE=1 hweb`:
+  ephemeral website data manager (cookies, storage, cache in memory
+  only), no history writes (completion still reads the existing
+  history), `[private]` in the status bar. `-p` also setenvs
+  `HWEB_PRIVATE`, and the env is what windows spawned from a private
+  window (`t`/`T`, `F` hints) inherit — so they are private too.
 
 ## Style
 

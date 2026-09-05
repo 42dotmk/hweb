@@ -24,6 +24,7 @@ static const char *modename[] = {"normal", "insert", "hint", "prompt"};
 static GtkWidget *win, *view, *status, *modelbl, *urllbl, *entry, *complbl;
 static WebKitUserContentManager *ucm;
 static enum mode mode = NORMAL;
+static int private; /* HWEB_PRIVATE: ephemeral storage, no history writes */
 static char pending[64];
 static int inspecting;
 static char *hoveruri;
@@ -122,7 +123,8 @@ static void setstatus(const char *msg) {
 
 static void updatemode(void) {
     char buf[96];
-    snprintf(buf, sizeof buf, "%s%s%s", mode == NORMAL ? "" : "-- ",
+    snprintf(buf, sizeof buf, "%s%s%s%s", private ? "[private] " : "",
+             mode == NORMAL ? "" : "-- ",
              mode == NORMAL ? pending : modename[mode],
              mode == NORMAL ? "" : " --");
     gtk_label_set_text(GTK_LABEL(modelbl), buf);
@@ -647,7 +649,8 @@ static void message(WebKitUserContentManager *m, WebKitJavascriptResult *r,
 static void histflush(const char *title, int force) {
     if (!histpending || (!force && (!title || !*title)))
         return;
-    histadd(histpending, title);
+    if (!private)
+        histadd(histpending, title);
     g_free(histpending);
     histpending = NULL;
 }
@@ -920,8 +923,11 @@ static WebKitWebContext *context(void) {
     char *data = g_build_filename(g_get_user_data_dir(), "hweb", NULL);
     char *cache = g_build_filename(g_get_user_cache_dir(), "hweb", NULL);
     char *cookies = g_build_filename(data, "cookies.sqlite", NULL);
-    WebKitWebsiteDataManager *dm = webkit_website_data_manager_new(
-        "base-data-directory", data, "base-cache-directory", cache, NULL);
+    WebKitWebsiteDataManager *dm =
+        private ? webkit_website_data_manager_new_ephemeral()
+                : webkit_website_data_manager_new("base-data-directory", data,
+                                                  "base-cache-directory", cache,
+                                                  NULL);
     WebKitWebContext *ctx =
         webkit_web_context_new_with_website_data_manager(dm);
     WebKitCookieManager *cm = webkit_web_context_get_cookie_manager(ctx);
@@ -930,9 +936,11 @@ static WebKitWebContext *context(void) {
     size_t i;
 
     g_mkdir_with_parents(data, 0700);
+    /* private windows still read history for completion, just never write */
     histinit(g_build_filename(data, "history", NULL), histfilter);
-    webkit_cookie_manager_set_persistent_storage(
-        cm, cookies, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+    if (!private)
+        webkit_cookie_manager_set_persistent_storage(
+            cm, cookies, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
     webkit_cookie_manager_set_accept_policy(
         cm, WEBKIT_COOKIE_POLICY_ACCEPT_NO_THIRD_PARTY);
     webkit_web_context_set_preferred_languages(ctx, languages);
@@ -1043,6 +1051,7 @@ static void setup(void) {
     gtk_widget_hide(entry);
     gtk_widget_hide(complbl);
     gtk_widget_grab_focus(view);
+    updatemode();
     updatetitle();
     loadscripts();
 }
@@ -1058,6 +1067,15 @@ int main(int argc, char *argv[]) {
     if (argc > 1 && !strcmp(argv[1], "-v")) {
         puts("hweb " HWEB_VERSION);
         return 0;
+    }
+    /* the env carries privateness to t/T/F-spawned windows, so windows
+     * opened from a private window are private too; -p sets it for both
+     * this process and, via setenv, its children */
+    private = getenv("HWEB_PRIVATE") != NULL;
+    if (argc > 1 && !strcmp(argv[1], "-p")) {
+        private = 1;
+        setenv("HWEB_PRIVATE", "1", 1);
+        argv++, argc--;
     }
     g_set_prgname("hweb");
     gtk_init(&argc, &argv);
