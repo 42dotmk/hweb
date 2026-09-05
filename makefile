@@ -12,6 +12,7 @@ EXFLAGS != pkg-config --cflags webkit2gtk-web-extension-4.1 | sed 's/-I/-isystem
 EXLIBS  != pkg-config --libs webkit2gtk-web-extension-4.1
 BINDIR  = $(HOME)/.local/bin
 APPDIR  = $(HOME)/.local/share/applications
+PYSITE  = import site, sysconfig; print(site.getusersitepackages() if site.ENABLE_USER_SITE else sysconfig.get_path('purelib'))
 
 all: hweb hweb-ext.so hwebc
 
@@ -38,8 +39,9 @@ install: all
 	mkdir -p $(BINDIR) $(APPDIR)
 	ln -sf "$$(pwd)/hweb" $(BINDIR)/hweb
 	ln -sf "$$(pwd)/hwebc" $(BINDIR)/hwebc
-	# the python client, importable as `import hweb`
-	d=$$(python3 -c 'import site; print(site.getusersitepackages())' 2>/dev/null) \
+	# the python client, importable as `import hweb`: the user site-packages,
+	# or the interpreter's own when user site is disabled (uv-managed pythons)
+	d=$$(python3 -c "$(PYSITE)" 2>/dev/null) \
 	  && mkdir -p "$$d" && ln -sf "$$(pwd)/hweb.py" "$$d/hweb.py" || true
 	sed "s|^Exec=hweb|Exec=$(BINDIR)/hweb|" hweb.desktop > $(APPDIR)/hweb.desktop
 	update-desktop-database $(APPDIR) 2>/dev/null || true
@@ -47,7 +49,7 @@ install: all
 
 uninstall:
 	rm -f $(BINDIR)/hweb $(BINDIR)/hwebc $(APPDIR)/hweb.desktop
-	rm -f "$$(python3 -c 'import site; print(site.getusersitepackages())')/hweb.py"
+	rm -f "$$(python3 -c "$(PYSITE)")/hweb.py"
 
 clean:
 	rm -f hweb hweb-ext.so hwebc auto.h
