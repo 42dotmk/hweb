@@ -38,12 +38,16 @@ install: all
 	mkdir -p $(BINDIR) $(APPDIR)
 	ln -sf "$$(pwd)/hweb" $(BINDIR)/hweb
 	ln -sf "$$(pwd)/hwebc" $(BINDIR)/hwebc
+	# the python client, importable as `import hweb`
+	d=$$(python3 -c 'import site; print(site.getusersitepackages())' 2>/dev/null) \
+	  && mkdir -p "$$d" && ln -sf "$$(pwd)/hweb.py" "$$d/hweb.py" || true
 	sed "s|^Exec=hweb|Exec=$(BINDIR)/hweb|" hweb.desktop > $(APPDIR)/hweb.desktop
 	update-desktop-database $(APPDIR) 2>/dev/null || true
 	xdg-settings set default-web-browser hweb.desktop
 
 uninstall:
 	rm -f $(BINDIR)/hweb $(BINDIR)/hwebc $(APPDIR)/hweb.desktop
+	rm -f "$$(python3 -c 'import site; print(site.getusersitepackages())')/hweb.py"
 
 clean:
 	rm -f hweb hweb-ext.so hwebc auto.h

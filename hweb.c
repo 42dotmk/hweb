@@ -997,10 +997,24 @@ static gboolean scrollquery(gpointer p) {
  * wheel event at the pointer. WebKit scrolls 11% of the view height
  * (at least 40 px) per smooth-scroll unit, so N px is N/unit units. */
 static void c_mousescroll(Req *r, Args *a) {
-    const char *dir = pos(a, 0), *n = pos(a, 1);
+    const char *dir = NULL, *n = NULL;
     double pxls, unit, dx = 0, dy = 0, x = px, y = py;
     GdkEvent *e;
-    int i;
+    int i, k = 0;
+    /* positionals by hand: --at takes two values */
+    for (i = 1; i < a->argc; i++) {
+        if (!strcmp(a->argv[i], "--at")) {
+            i += 2;
+            continue;
+        }
+        if (a->argv[i][0] == '-' && a->argv[i][1] == '-')
+            continue;
+        if (k == 0)
+            dir = a->argv[i];
+        else if (k == 1)
+            n = a->argv[i];
+        k++;
+    }
     if (dir && g_ascii_isdigit(*dir)) {
         n = dir;
         dir = "down";

@@ -17,6 +17,14 @@ Two source files:
   the makefile embeds it as `auto.h`), see *Automation* below.
 - `hwebc.c` — the control client: `hwebc VERB ARGS...` sends one command
   line to a running window's socket and prints the JSON reply.
+- `hweb.py` — the same client as a Python library (standard library
+  only; `make install` links it into the user site-packages):
+  `hweb.Window()` is the current window, `hweb.windows()` all of them,
+  `Window.open(url)` starts one; methods mirror the verbs
+  (`w.click(text="Sign in", wait=True)`, `w.type("x", placeholder="Search",
+  submit=True)`, `w.mouse_click(x, y)`, `w.screenshot()`, `w.html()`,
+  `w.js("return innerWidth")`), `w.cmd(verb, *args, **flags)` builds any
+  line, `w.send(line)` sends one raw. Error replies raise `hweb.Error`.
 - `history.c` — the visit log: `$XDG_DATA_HOME/hweb/history`, a flat
   append-only file of `url<TAB>title` lines (one per finished load, written
   once the title arrives), and `histmatch()`, which runs `histfilter` from
