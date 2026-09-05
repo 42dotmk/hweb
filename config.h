@@ -59,7 +59,8 @@ static const char *statuscss =
     "font-size: 12px; padding: 2px 6px; }";
 
 /* normal-mode keys: a sequence of key tokens -> command. Tokens are the
- * typed character, or <C-x>/<M-x> for ctrl/alt chords, or <Name> for
+ * typed character, or <C-x>/<M-x>/<D-x> for ctrl/alt/super chords (super
+ * keeps the keyval's case, so <D-B> means super+shift+b), or <Name> for
  * other keys using GDK key names (<Escape>, <Down>, <Page_Down>...).
  * In commands, %u = current url, %t = title, %c = clipboard text.
  * See cmd() in hweb.c for the command list. */
@@ -90,6 +91,7 @@ static const struct key {
     {"O", "prompt :open %u"},
     {"t", "prompt :tab "},
     {"T", "tab %u"},
+    {"<D-B>", "private"},
     {"f", "hint open"},
     {"F", "hint new"},
     {"gf", "hint yank"},

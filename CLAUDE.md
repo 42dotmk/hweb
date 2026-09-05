@@ -62,7 +62,8 @@ in the `js` event on stdout.
   gains focus, left with Escape), `hint` (after `f`/`F`/`gf`; typed hint
   letters filter the labels), `prompt` (the entry: `:cmd`, `/find`).
 - **Commands** — one text language used by the keymap, the `:` prompt and
-  stdin. `cmd()` in `hweb.c` is the whole list: `open`, `tab`, `back`,
+  stdin. `cmd()` in `hweb.c` is the whole list: `open`, `tab`, `private`
+  (a new private window), `back`,
   `forward`, `reload`, `reload!`, `stop`, `quit`, `scroll DX DY`,
   `scrollpage F`, `scrollto N`, `zoom +|-|N`, `find`, `findnext`,
   `findprev`, `insert`, `normal`, `hint open|new|yank|download`, `js CODE`,
@@ -104,7 +105,9 @@ in the `js` event on stdout.
 - **State** lives in `$XDG_DATA_HOME/hweb` (cookies.sqlite, storage) and
   `$XDG_CACHE_HOME/hweb`; third-party cookies are refused. Downloads go to
   `downloaddir` when a response's mime type cannot be shown.
-- **Private browsing** — `hweb -p [URL]` or `HWEB_PRIVATE=1 hweb`:
+- **Private browsing** — `hweb -p [URL]`, `HWEB_PRIVATE=1 hweb`, the
+  `private [URL]` command, or super+shift+b (`<D-B>` in `keys[]`; `<D-x>`
+  is the super/cmd chord token, case kept so shift matters):
   ephemeral website data manager (cookies, storage, cache in memory
   only), no history writes (completion still reads the existing
   history), `[private]` in the status bar. `-p` also setenvs

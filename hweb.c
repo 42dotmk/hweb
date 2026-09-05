@@ -35,11 +35,11 @@ static int compquiet;     /* entry changes made by completion itself */
 static char *histpending; /* loaded url still waiting for its title */
 /* every verb cmd() understands, for : completion */
 static const char *cmdnames[] = {
-    "open", "tab",      "back",       "forward",    "reload",   "reload!",
-    "stop", "quit",     "scroll",     "scrollpage", "scrollto", "zoom",
-    "find", "findnext", "findprev",   "insert",     "normal",   "hint",
-    "js",   "inject",   "inspect",    "yank",       "download", "prompt",
-    "echo", "title",    "blockupdate"};
+    "open",    "tab",  "private",  "back",       "forward",    "reload",
+    "reload!", "stop", "quit",     "scroll",     "scrollpage", "scrollto",
+    "zoom",    "find", "findnext", "findprev",   "insert",     "normal",
+    "hint",    "js",   "inject",   "inspect",    "yank",       "download",
+    "prompt",  "echo", "title",    "blockupdate"};
 static char exedir[4096];
 
 /* internal scripts, isolated world "hweb": insert-mode tracking and the
@@ -194,12 +194,15 @@ static char *jsstr(const char *s) {
     return g_string_free(g, FALSE);
 }
 
-static void spawn(const char *uri) {
-    char *argv[] = {NULL, NULL, NULL};
+static void spawn(const char *uri, int priv) {
+    char *argv[] = {NULL, NULL, NULL, NULL};
     char path[4200];
+    int i = 0;
     snprintf(path, sizeof path, "%s/hweb", exedir);
-    argv[0] = path;
-    argv[1] = (char *)uri;
+    argv[i++] = path;
+    if (priv)
+        argv[i++] = "-p";
+    argv[i] = (char *)uri;
     g_spawn_async(NULL, argv, NULL, G_SPAWN_DEFAULT, NULL, NULL, NULL, NULL);
     ev("new %s", uri);
 }
@@ -302,7 +305,8 @@ static void complete(int dir) {
             t += n;
             while (*t == ' ')
                 t++;
-            if (strcmp(verb, "open") && strcmp(verb, "tab")) {
+            if (strcmp(verb, "open") && strcmp(verb, "tab") &&
+                strcmp(verb, "private")) {
                 compclear();
                 return;
             }
@@ -381,9 +385,9 @@ static void cmd(const char *line) {
         char *u = tourl(arg);
         webkit_web_view_load_uri(v, u);
         g_free(u);
-    } else if (!strcmp(verb, "tab")) {
+    } else if (!strcmp(verb, "tab") || !strcmp(verb, "private")) {
         char *u = tourl(arg);
-        spawn(u);
+        spawn(u, *verb == 'p');
         g_free(u);
     } else if (!strcmp(verb, "back")) {
         webkit_web_view_go_back(v);
@@ -516,8 +520,12 @@ static void expand(const char *in, char *out, size_t n) {
 }
 
 static void keytoken(GdkEventKey *e, char *buf, size_t n) {
-    guint mods =
-        e->state & gtk_accelerator_get_default_mod_mask() & ~GDK_SHIFT_MASK;
+    /* the raw state has Mod4, not the virtual SUPER bit; translate first */
+    GdkModifierType state = e->state;
+    guint mods;
+    gdk_keymap_add_virtual_modifiers(
+        gdk_keymap_get_for_display(gdk_display_get_default()), &state);
+    mods = state & gtk_accelerator_get_default_mod_mask() & ~GDK_SHIFT_MASK;
     gunichar u = gdk_keyval_to_unicode(e->keyval);
     if (mods & GDK_CONTROL_MASK)
         snprintf(buf, n, "<C-%s>",
@@ -525,6 +533,9 @@ static void keytoken(GdkEventKey *e, char *buf, size_t n) {
     else if (mods & GDK_MOD1_MASK)
         snprintf(buf, n, "<M-%s>",
                  gdk_keyval_name(gdk_keyval_to_lower(e->keyval)));
+    else if (mods & GDK_SUPER_MASK)
+        /* keyval keeps its case, so <D-b> and <D-B> (shift) differ */
+        snprintf(buf, n, "<D-%s>", gdk_keyval_name(e->keyval));
     else if (u && g_unichar_isprint(u))
         buf[g_unichar_to_utf8(u, buf)] = 0;
     else
@@ -633,7 +644,7 @@ static void message(WebKitUserContentManager *m, WebKitJavascriptResult *r,
         if (mode == HINT)
             setmode(NORMAL);
         if (!strncmp(rest, "new ", 4) && rest[4])
-            spawn(rest + 4);
+            spawn(rest + 4, 0);
         else if ((!strncmp(rest, "yank ", 5) && rest[5]) ||
                  (!strncmp(rest, "download ", 9) && rest[9]))
             cmd(rest); /* the hint action is the command verb */
@@ -759,8 +770,9 @@ static GtkWidget *create(WebKitWebView *v, WebKitNavigationAction *a,
     (void)data;
 
     if (webkit_navigation_action_get_mouse_button(a)) {
-        spawn(webkit_uri_request_get_uri(
-            webkit_navigation_action_get_request(a)));
+        spawn(
+            webkit_uri_request_get_uri(webkit_navigation_action_get_request(a)),
+            0);
         return NULL;
     }
     pv = webkit_web_view_new_with_related_view(v);
@@ -815,7 +827,8 @@ static gboolean policy(WebKitWebView *v, WebKitPolicyDecision *d,
             (webkit_navigation_action_get_mouse_button(a) == 2 ||
              (webkit_navigation_action_get_modifiers(a) & GDK_CONTROL_MASK))) {
             spawn(webkit_uri_request_get_uri(
-                webkit_navigation_action_get_request(a)));
+                      webkit_navigation_action_get_request(a)),
+                  0);
             webkit_policy_decision_ignore(d);
             return TRUE;
         }
@@ -828,7 +841,8 @@ static gboolean policy(WebKitWebView *v, WebKitPolicyDecision *d,
          * to the default policy so ::create makes an opener popup */
         if (webkit_navigation_action_get_mouse_button(a)) {
             spawn(webkit_uri_request_get_uri(
-                webkit_navigation_action_get_request(a)));
+                      webkit_navigation_action_get_request(a)),
+                  0);
             webkit_policy_decision_ignore(d);
             return TRUE;
         }
