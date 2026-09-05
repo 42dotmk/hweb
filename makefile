@@ -15,8 +15,15 @@ APPDIR  = $(HOME)/.local/share/applications
 
 all: hweb hweb-ext.so hwebc
 
-hweb: hweb.c history.c history.h config.h args.h
+hweb: hweb.c history.c history.h config.h args.h auto.h
 	$(CC) $(CFLAGS) $(WKFLAGS) -o $@ hweb.c history.c $(WKLIBS)
+
+# auto.js as a C byte array (od is POSIX; a string literal this long
+# would trip -Woverlength-strings under -pedantic)
+auto.h: auto.js
+	{ printf 'static const char autojs[] = {\n'; \
+	  od -An -tu1 -v auto.js | sed 's/^ *//; s/  */,/g; s/$$/,/'; \
+	  printf '0};\n'; } > $@
 
 # the control client: plain C, no GTK
 hwebc: hwebc.c
@@ -39,6 +46,6 @@ uninstall:
 	rm -f $(BINDIR)/hweb $(BINDIR)/hwebc $(APPDIR)/hweb.desktop
 
 clean:
-	rm -f hweb hweb-ext.so hwebc
+	rm -f hweb hweb-ext.so hwebc auto.h
 
 .PHONY: all install uninstall clean

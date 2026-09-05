@@ -120,7 +120,10 @@ static const char *corejs =
     "P('hint done');if(ed(el)){el.focus();return;}el.focus();el.click();};"
     "H.cancel=function(){H.labels.forEach(l=>l[2].remove());"
     "H.labels=[];H.typed='';};"
+    "H.vis=vis;H.ed=ed;"
     "})();";
+/* the automation library (auto.js), embedded by the makefile */
+#include "auto.h"
 
 static void cmd(const char *line);
 static void cmdreq(Req *r, const char *line);
@@ -551,6 +554,84 @@ static void find(const char *text, guint32 extra) {
 
 #define V WEBKIT_WEB_VIEW(view)
 
+/* the parsed command line as JSON for auto.js: positionals in "_", flags
+ * by name, boolean flags true */
+static void argsjson(Args *a, char *out, size_t n) {
+    GString *g = g_string_new("{\"_\":[");
+    char q[8300];
+    int i, first = 1;
+    for (i = 1; i < a->argc; i++) {
+        if (a->argv[i][0] == '-' && a->argv[i][1] == '-') {
+            if (!strchr(a->argv[i], '=') && !isbool(a, a->argv[i] + 2))
+                i++; /* its value */
+            continue;
+        }
+        g_string_append_printf(g, "%s%s", first ? "" : ",",
+                               jq(q, sizeof q, a->argv[i]));
+        first = 0;
+    }
+    g_string_append_c(g, ']');
+    for (i = 1; i < a->argc; i++) {
+        char *eq, name[256];
+        if (a->argv[i][0] != '-' || a->argv[i][1] != '-')
+            continue;
+        snprintf(name, sizeof name, "%s", a->argv[i] + 2);
+        if ((eq = strchr(name, '='))) {
+            *eq = 0;
+            g_string_append_printf(g, ",%s:%s", jq(q, sizeof q, name),
+                                   jq(q, sizeof q, eq + 1));
+        } else if (isbool(a, name)) {
+            g_string_append_printf(g, ",%s:true", jq(q, sizeof q, name));
+        } else if (i + 1 < a->argc) {
+            g_string_append_printf(g, ",%s:", jq(q, sizeof q, name));
+            g_string_append(g, jq(q, sizeof q, a->argv[++i]));
+        }
+    }
+    g_string_append_c(g, '}');
+    snprintf(out, n, "%s", g->str);
+    g_string_free(g, TRUE);
+}
+
+/* auto.js answered: its object is the reply (honouring --wait) */
+static void jsrundone(GObject *o, GAsyncResult *res, gpointer p) {
+    Req *r = p;
+    GError *err = NULL;
+    char *j;
+    JSCValue *v = webkit_web_view_call_async_javascript_function_finish(
+        WEBKIT_WEB_VIEW(o), res, &err);
+    if (err) {
+        replyerr(r, "%s", err->message);
+        g_error_free(err);
+        return;
+    }
+    j = jsc_value_to_json(v, 0);
+    if (!j)
+        replyerr(r, "unserializable result");
+    else if (!strncmp(j, "{\"type\":\"error\"", 15) ||
+             strstr(j, "\"type\":\"error\""))
+        reply(r, j);
+    else
+        finish(r, j);
+    g_free(j);
+    g_object_unref(v);
+}
+
+/* run verb in auto.js with the command's arguments; cb gets the JSCValue */
+static void jsrun(Req *r, const char *verb, Args *a, GAsyncReadyCallback cb) {
+    static char json[65536];
+    argsjson(a, json, sizeof json);
+    webkit_web_view_call_async_javascript_function(
+        V, "return __hweb.auto.run(v, JSON.parse(a))", -1,
+        g_variant_new_parsed("{'v': <%s>, 'a': <%s>}", verb, json), "hweb",
+        NULL, NULL, cb, r);
+}
+
+/* the verbs auto.js implements: click, focus, type, select, highlight... */
+static void c_auto(Req *r, Args *a) {
+    r->wait = optflag(a, "wait");
+    jsrun(r, a->argv[0], a, jsrundone);
+}
+
 /* commands. Every handler answers its request exactly once, through
  * reply/replyf/replyerr/finish/ok or by handing it to an async callback.
  * "Raw" verbs (open, tab, private, js, inject, yank, download, prompt,
@@ -632,7 +713,7 @@ static void c_scroll(Req *r, Args *a) {
         ok(r);
         return;
     }
-    replyerr(r, "scroll: not implemented yet");
+    jsrun(r, "scroll", a, jsrundone);
 }
 
 static void c_scrollpage(Req *r, Args *a) {
@@ -881,6 +962,17 @@ static const struct command commands[] = {
     {"windows", c_info, ""},
     {"resize", c_resize, ""},
     {"blockupdate", c_blockupdate, ""},
+    /* auto.js */
+    {"click", c_auto, "wait"},
+    {"focus", c_auto, ""},
+    {"type", c_auto, "no-clear,submit,wait"},
+    {"input", c_auto, "no-clear,submit,wait"},
+    {"select", c_auto, "no-mouse,no-scroll,no-focus"},
+    {"select-clear", c_auto, ""},
+    {"highlight", c_auto, "all,no-scroll"},
+    {"clear-highlights", c_auto, ""},
+    {"metrics", c_auto, ""},
+    {"active", c_auto, ""},
 };
 
 static void cmdreq(Req *r, const char *line) {
@@ -1556,6 +1648,11 @@ static void setup(void) {
     webkit_user_content_manager_register_script_message_handler(ucm, "hweb");
     us = webkit_user_script_new_for_world(
         corejs, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+        WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, "hweb", NULL, NULL);
+    webkit_user_content_manager_add_script(ucm, us);
+    webkit_user_script_unref(us);
+    us = webkit_user_script_new_for_world(
+        autojs, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
         WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, "hweb", NULL, NULL);
     webkit_user_content_manager_add_script(ucm, us);
     webkit_user_script_unref(us);

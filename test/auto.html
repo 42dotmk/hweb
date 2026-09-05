@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>hweb auto fixture</title>
+<style>
+body{margin:0;font:14px sans-serif}
+#log{position:fixed;right:8px;top:8px;width:320px;height:200px;overflow:auto;background:#eee;font:11px monospace;white-space:pre;margin:0;padding:4px}
+.row{padding:8px 16px}
+#inner{height:240px;overflow:auto;border:1px solid #888;width:300px}
+#inner div{height:60px;border-bottom:1px solid #ccc}
+#tall{height:2500px;background:linear-gradient(#fff,#ccd)}
+</style></head><body>
+<pre id="log"></pre>
+<div class="row">
+  <button id="save1" onclick="log('click save visible id='+this.id+' trusted='+event.isTrusted)">Save</button>
+  <button id="save0" style="display:none" onclick="log('click save HIDDEN')">Save</button>
+  <button id="go" onclick="log('click go')">Go</button>
+</div>
+<div class="row">
+  <input id="react" placeholder="Search here">
+  <label for="country">Country</label>
+  <select id="country"><option value="de">Germany</option><option value="fr">France</option></select>
+  <label>Nickname <input id="nick" name="nickname"></label>
+  <div id="ce" contenteditable="true" style="border:1px solid #888;min-height:20px;width:200px">old text</div>
+</div>
+<form class="row" id="f" action="#done" onsubmit="log('submit form'); return false">
+  <input id="q" name="q"><button type="submit">Send</button>
+</form>
+<p class="row" id="para">The quick brown fox jumps over the lazy dog. Select me by text.</p>
+<div class="row"><div id="inner"><div>i1</div><div>i2</div><div>i3</div><div>i4</div><div>i5</div><div>i6</div><div>i7</div><div>i8</div></div></div>
+<ul class="row"><li>alpha</li><li>beta</li><li>gamma</li></ul>
+<div id="tall"></div>
+<a id="link" href="#bottom">bottom link</a>
+<script>
+function log(s){var l=document.getElementById('log');l.textContent+=s+'\n';window.LOG=(window.LOG||[]).concat([s]);}
+/* React-like controlled input: a value tracker that must see a stale value on input */
+(function(){var el=document.getElementById('react'),tracked='';
+var desc=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');
+Object.defineProperty(el,'value',{get:function(){return desc.get.call(this)},set:function(v){tracked=v;desc.set.call(this,v)},configurable:true});
+el.addEventListener('input',function(e){log('react input node='+desc.get.call(el)+' tracked='+tracked+' changed='+(desc.get.call(el)!==tracked)+' type='+e.inputType)});})();
+document.getElementById('country').addEventListener('change',function(){log('country change '+this.value)});
+document.getElementById('ce').addEventListener('beforeinput',function(e){log('ce beforeinput '+e.inputType+' '+e.data)});
+document.getElementById('nick').addEventListener('input',function(){log('nick input '+this.value)});
+document.addEventListener('focusin',function(e){log('focus '+(e.target.id||e.target.tagName))});
+document.addEventListener('mousedown',function(e){log('mousedown trusted='+e.isTrusted+' '+e.clientX+','+e.clientY)});
+document.addEventListener('selectionchange',function(){var s=getSelection().toString();if(s)log('selection "'+s.slice(0,20)+'"')});
+</script></body></html>

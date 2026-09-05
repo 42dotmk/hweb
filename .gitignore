@@ -4,3 +4,4 @@ hwebc
 *.o
 .hedlog
 tags
+auto.h
