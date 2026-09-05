@@ -37,6 +37,9 @@ static const char *searchurl = "https://duckduckgo.com/?q=%s";
  * main world); "inject FILE" adds more at runtime */
 static const char *scriptdir = "~/.config/hweb/scripts";
 static const char *downloaddir = "~/downloads";
+/* `screenshot` and `dump` write here (<pid>_<title>.png|html) unless
+ * given --out */
+static const char *dumpdir = "~/.local/share/hweb/dumps";
 /* visited pages are appended to $XDG_DATA_HOME/hweb/history as
  * "url<TAB>title"; Tab after `:open `/`:tab ` completes from it through this
  * shell snippet ($1 = history file, $2 = typed query), which must print
@@ -109,7 +112,7 @@ static const struct key {
     {"P", "tab %c"},
     {"+", "zoom +"},
     {"-", "zoom -"},
-    {"=", "zoom 1"},
+    {"=", "zoom 100"},
     {"gd", "inspect"},
     {"ZZ", "quit"},
     {"q", "quit"},

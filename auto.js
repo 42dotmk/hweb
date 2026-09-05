@@ -167,6 +167,7 @@
         r = pick(info(el), ["tag", "href", "text"]);
         r.type = "clicked";
         r.nav = navKind(el);
+        if (focusable(el)) el.focus(); /* as a real click would */
         el.click();
         return r;
     };

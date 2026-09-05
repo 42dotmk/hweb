@@ -11,6 +11,7 @@
 #include <glib-unix.h>
 #include <glib/gstdio.h>
 #include <gtk/gtk.h>
+#include <math.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -58,9 +59,15 @@ typedef struct {
     int wait;    /* --wait: hold the reply for a navigation */
     int loading; /* a load started after the action */
     guint timer;
-    char *json; /* reply held back by --wait */
+    char *json;   /* reply held back by --wait */
+    char *target; /* element under a mouse command, JSON */
     double x, y, w, h;
     int full, quality;
+    int button, count; /* mouse */
+    guint state;       /* modifier mask */
+    guint keyval;
+    char kind[24]; /* reply type of a multi-step command */
+    char key[64];
     char fmt[8];
     char path[4096];
 } Req;
@@ -198,6 +205,7 @@ static void reqfree(Req *r) {
     if (r->timer)
         g_source_remove(r->timer);
     g_free(r->json);
+    g_free(r->target);
     memset(r, 0, sizeof *r);
 }
 
@@ -616,20 +624,602 @@ static void jsrundone(GObject *o, GAsyncResult *res, gpointer p) {
     g_object_unref(v);
 }
 
-/* run verb in auto.js with the command's arguments; cb gets the JSCValue */
+/* run verb in auto.js with opts (JSON); cb gets the JSCValue */
+static void jscall(Req *r, const char *verb, const char *opts,
+                   GAsyncReadyCallback cb) {
+    webkit_web_view_call_async_javascript_function(
+        V, "return __hweb.auto.run(v, JSON.parse(a))", -1,
+        g_variant_new_parsed("{'v': <%s>, 'a': <%s>}", verb, opts), "hweb",
+        NULL, NULL, cb, r);
+}
+
+/* ... with the command's own arguments */
 static void jsrun(Req *r, const char *verb, Args *a, GAsyncReadyCallback cb) {
     static char json[65536];
     argsjson(a, json, sizeof json);
-    webkit_web_view_call_async_javascript_function(
-        V, "return __hweb.auto.run(v, JSON.parse(a))", -1,
-        g_variant_new_parsed("{'v': <%s>, 'a': <%s>}", verb, json), "hweb",
-        NULL, NULL, cb, r);
+    jscall(r, verb, json, cb);
 }
 
 /* the verbs auto.js implements: click, focus, type, select, highlight... */
 static void c_auto(Req *r, Args *a) {
     r->wait = optflag(a, "wait");
     jsrun(r, a->argv[0], a, jsrundone);
+}
+
+/* synthesized input: real GDK events handed to the web view, which WebKit
+ * treats as user input (trusted DOM events, hover, native scrolling,
+ * focus traversal). Coordinates are CSS px; the pointer they move is
+ * virtual, the X pointer stays put, so auto.js draws a cursor for it. */
+static double px, py;             /* the virtual pointer, CSS px */
+static guint32 evtime = 1000;     /* event timestamps, ms, increasing */
+static gint64 lastsynthright = 0; /* to suppress WebKit's context menu */
+static struct {
+    Req *r;
+    double x0, y0, x1, y1, cx, cy; /* from, to, bezier control point */
+    int step, steps, linear;
+    guint state;
+    void (*done)(Req *);
+    guint timer;
+} glide;
+
+static double zoom(void) { return webkit_web_view_get_zoom_level(V); }
+
+static GdkEvent *mkev(GdkEventType t, double cx, double cy, guint state) {
+    GdkEvent *e = gdk_event_new(t);
+    GdkWindow *w = gtk_widget_get_window(view);
+    GdkSeat *seat = gdk_display_get_default_seat(gdk_display_get_default());
+    GdkDevice *ptr = gdk_seat_get_pointer(seat);
+    double x = cx * zoom(), y = cy * zoom();
+    int ox, oy;
+    gdk_window_get_origin(w, &ox, &oy);
+    e->any.window = g_object_ref(w);
+    e->any.send_event = FALSE;
+    evtime += 8;
+    switch (t) {
+    case GDK_MOTION_NOTIFY:
+        e->motion.time = evtime;
+        e->motion.x = x;
+        e->motion.y = y;
+        e->motion.state = state;
+        e->motion.x_root = ox + x;
+        e->motion.y_root = oy + y;
+        break;
+    case GDK_BUTTON_PRESS:
+    case GDK_BUTTON_RELEASE:
+        e->button.time = evtime;
+        e->button.x = x;
+        e->button.y = y;
+        e->button.state = state;
+        e->button.x_root = ox + x;
+        e->button.y_root = oy + y;
+        break;
+    case GDK_SCROLL:
+        e->scroll.time = evtime;
+        e->scroll.x = x;
+        e->scroll.y = y;
+        e->scroll.state = state;
+        e->scroll.direction = GDK_SCROLL_SMOOTH;
+        e->scroll.x_root = ox + x;
+        e->scroll.y_root = oy + y;
+        break;
+    default:
+        break;
+    }
+    gdk_event_set_device(e, ptr);
+    gdk_event_set_source_device(e, ptr);
+    return e;
+}
+
+static void sendev(GdkEvent *e) {
+    gtk_widget_event(view, e);
+    gdk_event_free(e);
+}
+
+static void motion(double x, double y, guint state) {
+    sendev(mkev(GDK_MOTION_NOTIFY, x, y, state));
+    px = x;
+    py = y;
+    js("hweb", NULL, "__hweb.auto.run('cursor',{_:[%g,%g]})", x, y);
+}
+
+static guint buttonmask(int b) {
+    return b == 1   ? GDK_BUTTON1_MASK
+           : b == 2 ? GDK_BUTTON2_MASK
+                    : GDK_BUTTON3_MASK;
+}
+
+static void press(double x, double y, int b, guint state) {
+    GdkEvent *e = mkev(GDK_BUTTON_PRESS, x, y, state);
+    e->button.button = (guint)b;
+    if (b == 3)
+        lastsynthright = g_get_monotonic_time();
+    sendev(e);
+}
+
+static void release(double x, double y, int b, guint state) {
+    GdkEvent *e = mkev(GDK_BUTTON_RELEASE, x, y, state | buttonmask(b));
+    e->button.button = (guint)b;
+    sendev(e);
+}
+
+static gboolean ctxmenu(WebKitWebView *v, WebKitContextMenu *m, GdkEvent *e,
+                        WebKitHitTestResult *h, gpointer d) {
+    (void)v, (void)m, (void)e, (void)h, (void)d;
+    /* the page saw its contextmenu event; no GTK menu for a synthetic click */
+    return g_get_monotonic_time() - lastsynthright < 500000;
+}
+
+static gboolean glidestep(gpointer d) {
+    double t = (double)++glide.step / glide.steps, e, u;
+    Req *r;
+    (void)d;
+    e = glide.linear ? t
+        : t < 0.5    ? 4 * t * t * t
+                     : 1 - pow(-2 * t + 2, 3) / 2; /* ease in-out cubic */
+    u = 1 - e;
+    motion(u * u * glide.x0 + 2 * u * e * glide.cx + e * e * glide.x1,
+           u * u * glide.y0 + 2 * u * e * glide.cy + e * e * glide.y1,
+           glide.state);
+    if (glide.step < glide.steps)
+        return TRUE;
+    glide.timer = 0;
+    r = glide.r;
+    glide.r = NULL;
+    glide.done(r);
+    return FALSE;
+}
+
+/* move the virtual pointer to x,y along a human-ish path (a bowed,
+ * eased curve; straight and linear for drags), then call done */
+static void glideto(Req *r, double x, double y, int instant, double durms,
+                    guint state, int steps, void (*done)(Req *)) {
+    double dist = hypot(x - px, y - py), arc, nx, ny;
+    if (glide.r) {
+        replyerr(r, "busy: pointer in motion");
+        return;
+    }
+    if (instant || dist < 2) {
+        motion(x, y, state);
+        done(r);
+        return;
+    }
+    glide.r = r;
+    glide.x0 = px;
+    glide.y0 = py;
+    glide.x1 = x;
+    glide.y1 = y;
+    glide.linear = steps > 0;
+    glide.steps = steps > 0 ? steps : (int)CLAMP(lround(dist / 11), 10, 45);
+    glide.step = 0;
+    glide.state = state;
+    glide.done = done;
+    if (durms <= 0)
+        durms = CLAMP(dist * 0.77, 94, 402);
+    arc = glide.linear ? 0 : MIN(36, dist * 0.10);
+    nx = -(y - py) / dist;
+    ny = (x - px) / dist;
+    glide.cx = (px + x) / 2 + nx * arc;
+    glide.cy = (py + y) / 2 + ny * arc;
+    glide.timer =
+        g_timeout_add((guint)MAX(1, durms / glide.steps), glidestep, NULL);
+}
+
+static guint modstate(Args *a) {
+    return (optflag(a, "shift") ? GDK_SHIFT_MASK : 0) |
+           (optflag(a, "ctrl") ? GDK_CONTROL_MASK : 0) |
+           (optflag(a, "alt") ? GDK_MOD1_MASK : 0) |
+           (optflag(a, "meta") ? GDK_META_MASK : 0);
+}
+
+static int buttonof(Args *a) {
+    const char *b = optstr(a, "button");
+    return !b || !strcmp(b, "left") ? 1 : !strcmp(b, "middle") ? 2 : 3;
+}
+
+/* mouse-move/click landed: what is under the pointer, then act */
+static void atdone(GObject *o, GAsyncResult *res, gpointer p) {
+    Req *r = p;
+    GError *err = NULL;
+    JSCValue *v = webkit_web_view_call_async_javascript_function_finish(
+                 WEBKIT_WEB_VIEW(o), res, &err),
+             *t;
+    int i;
+    if (err) {
+        r->target = g_strdup("null");
+        g_error_free(err);
+    } else {
+        t = jsc_value_object_get_property(v, "target");
+        r->target = jsc_value_to_json(t, 0);
+        g_object_unref(t);
+        g_object_unref(v);
+    }
+    if (!strcmp(r->kind, "mouse_moved")) {
+        replyf(r, "{\"type\":\"mouse_moved\",\"x\":%g,\"y\":%g,\"target\":%s}",
+               r->x, r->y, r->target);
+        return;
+    }
+    for (i = 0; i < r->count; i++) {
+        press(r->x, r->y, r->button, r->state);
+        release(r->x, r->y, r->button, r->state);
+    }
+    js("hweb", NULL, "__hweb.auto.run('cursor',{_:[%g,%g],click:true})", r->x,
+       r->y);
+    {
+        static char buf[65536];
+        snprintf(
+            buf, sizeof buf,
+            "{\"type\":\"mouse_clicked\",\"x\":%g,\"y\":%g,\"button\":\"%s\","
+            "\"count\":%d,\"target\":%s}",
+            r->x, r->y,
+            r->button == 1   ? "left"
+            : r->button == 2 ? "middle"
+                             : "right",
+            r->count, r->target);
+        finish(r, buf);
+    }
+}
+
+static gboolean atquery(gpointer p) {
+    Req *r = p;
+    char opts[128];
+    r->timer = 0;
+    snprintf(opts, sizeof opts, "{\"_\":[%g,%g]}", r->x, r->y);
+    jscall(r, "at", opts, atdone);
+    return FALSE;
+}
+
+/* WebKit queues pointer events to the web process: ask what is under the
+ * pointer a moment after moving it */
+static void landed(Req *r) { r->timer = g_timeout_add(60, atquery, r); }
+
+/* mouse-move X Y | mouse-up/down/left/right [N] [--less|--more]
+ * [--instant] [--duration MS] [--shift --ctrl --alt --meta] */
+static void c_mousemove(Req *r, Args *a) {
+    const char *verb = a->argv[0] + 6, *n = pos(a, 0);
+    double x = px, y = py, step;
+    if (!strcmp(verb, "move")) {
+        if (npos(a) < 2) {
+            replyerr(r, "mouse-move needs X Y");
+            return;
+        }
+        x = atof(pos(a, 0));
+        y = atof(pos(a, 1));
+    } else {
+        step = n                    ? atof(n)
+               : optflag(a, "less") ? 1
+               : optflag(a, "more") ? 100
+                                    : 10;
+        x += !strcmp(verb, "right") ? step : !strcmp(verb, "left") ? -step : 0;
+        y += !strcmp(verb, "down") ? step : !strcmp(verb, "up") ? -step : 0;
+    }
+    r->x = x;
+    r->y = y;
+    snprintf(r->kind, sizeof r->kind, "mouse_moved");
+    glideto(r, x, y, optflag(a, "instant"), optnum(a, "duration", 0),
+            modstate(a), 0, landed);
+}
+
+/* mouse-click X Y [--button left|right|middle] [--count N|--double]
+ * [--instant] [--duration MS] [--wait] [modifiers] */
+static void c_mouseclick(Req *r, Args *a) {
+    if (npos(a) < 2) {
+        replyerr(r, "mouse-click needs X Y");
+        return;
+    }
+    r->x = atof(pos(a, 0));
+    r->y = atof(pos(a, 1));
+    r->button = buttonof(a);
+    r->count = optflag(a, "double") ? 2 : (int)optnum(a, "count", 1);
+    r->state = modstate(a);
+    r->wait = optflag(a, "wait");
+    snprintf(r->kind, sizeof r->kind, "mouse_clicked");
+    glideto(r, r->x, r->y, optflag(a, "instant"), optnum(a, "duration", 0),
+            r->state, 0, landed);
+}
+
+/* mouse-press / mouse-release [X Y] [--button B] */
+static void c_mousepress(Req *r, Args *a) {
+    int down = a->argv[0][6] == 'p', b = buttonof(a);
+    if (npos(a) >= 2) {
+        motion(atof(pos(a, 0)), atof(pos(a, 1)), modstate(a));
+    }
+    if (down)
+        press(px, py, b, modstate(a));
+    else
+        release(px, py, b, modstate(a));
+    replyf(r, "{\"type\":\"%s\",\"x\":%g,\"y\":%g,\"button\":\"%s\"}",
+           down ? "mouse_pressed" : "mouse_released", px, py,
+           b == 1   ? "left"
+           : b == 2 ? "middle"
+                    : "right");
+}
+
+static void dragdone(Req *r) {
+    release(r->x, r->y, r->button, r->state);
+    replyf(r,
+           "{\"type\":\"mouse_dragged\",\"from\":{\"x\":%g,\"y\":%g},"
+           "\"to\":{\"x\":%g,\"y\":%g},\"button\":\"%s\",\"steps\":%d}",
+           r->w, r->h, r->x, r->y,
+           r->button == 1   ? "left"
+           : r->button == 2 ? "middle"
+                            : "right",
+           r->count);
+}
+
+/* mouse-drag X1 Y1 X2 Y2 [--steps N] [--button B] */
+static void c_mousedrag(Req *r, Args *a) {
+    if (npos(a) < 4) {
+        replyerr(r, "mouse-drag needs X1 Y1 X2 Y2");
+        return;
+    }
+    r->w = atof(pos(a, 0)); /* from */
+    r->h = atof(pos(a, 1));
+    r->x = atof(pos(a, 2)); /* to */
+    r->y = atof(pos(a, 3));
+    r->button = buttonof(a);
+    r->count = (int)optnum(a, "steps", 10);
+    r->state = modstate(a);
+    motion(r->w, r->h, r->state);
+    press(r->w, r->h, r->button, r->state);
+    glideto(r, r->x, r->y, 0, r->count * 16.0, r->state | buttonmask(r->button),
+            r->count, dragdone);
+}
+
+static void scrolldone(GObject *o, GAsyncResult *res, gpointer p) {
+    Req *r = p;
+    GError *err = NULL;
+    JSCValue *v = webkit_web_view_call_async_javascript_function_finish(
+                 WEBKIT_WEB_VIEW(o), res, &err),
+             *sx, *sy;
+    double x = 0, y = 0;
+    if (!err) {
+        sx = jsc_value_object_get_property(v, "scrollX");
+        sy = jsc_value_object_get_property(v, "scrollY");
+        x = jsc_value_to_double(sx);
+        y = jsc_value_to_double(sy);
+        g_object_unref(sx), g_object_unref(sy), g_object_unref(v);
+    } else
+        g_error_free(err);
+    replyf(r,
+           "{\"type\":\"mouse_scrolled\",\"x\":%g,\"y\":%g,\"deltaX\":%g,"
+           "\"deltaY\":%g,\"scrollX\":%g,\"scrollY\":%g}",
+           r->x, r->y, r->w, r->h, x, y);
+}
+
+static gboolean scrollquery(gpointer p) {
+    Req *r = p;
+    r->timer = 0;
+    jscall(r, "metrics", "{}", scrolldone);
+    return FALSE;
+}
+
+/* mouse-scroll [up|down|left|right] [N] [--less|--more] [--at X Y]: a
+ * wheel event at the pointer. WebKit scrolls 11% of the view height
+ * (at least 40 px) per smooth-scroll unit, so N px is N/unit units. */
+static void c_mousescroll(Req *r, Args *a) {
+    const char *dir = pos(a, 0), *n = pos(a, 1);
+    double pxls, unit, dx = 0, dy = 0, x = px, y = py;
+    GdkEvent *e;
+    int i;
+    if (dir && g_ascii_isdigit(*dir)) {
+        n = dir;
+        dir = "down";
+    }
+    if (!dir)
+        dir = "down";
+    pxls = n                    ? atof(n)
+           : optflag(a, "less") ? 100
+           : optflag(a, "more") ? 700
+                                : 300;
+    unit =
+        MAX(40, lround(gtk_widget_get_allocated_height(view) / zoom() * 0.11));
+    if (!strcmp(dir, "up"))
+        dy = -pxls;
+    else if (!strcmp(dir, "left"))
+        dx = -pxls;
+    else if (!strcmp(dir, "right"))
+        dx = pxls;
+    else
+        dy = pxls;
+    if ((i = optidx(a, "at")) >= 0 && i + 2 < a->argc) {
+        x = atof(a->argv[i + 1]);
+        y = atof(a->argv[i + 2]);
+    }
+    e = mkev(GDK_SCROLL, x, y, modstate(a));
+    e->scroll.delta_x = dx / unit;
+    e->scroll.delta_y = dy / unit;
+    e->scroll.is_stop = 0;
+    sendev(e);
+    r->x = x;
+    r->y = y;
+    r->w = dx;
+    r->h = dy;
+    r->timer = g_timeout_add(400, scrollquery, r);
+}
+
+static void hidedone(GObject *o, GAsyncResult *res, gpointer p) {
+    GError *err = NULL;
+    JSCValue *v = webkit_web_view_call_async_javascript_function_finish(
+        WEBKIT_WEB_VIEW(o), res, &err);
+    if (err)
+        g_error_free(err);
+    else
+        g_object_unref(v);
+    reply(p, "{\"type\":\"mouse_hidden\"}");
+}
+
+static void c_mousehide(Req *r, Args *a) {
+    (void)a;
+    jscall(r, "cursor_hide", "{}", hidedone);
+}
+
+/* keyboard: DOM key names (Enter, ArrowDown, a...) or GDK names */
+static guint keyvalof(const char *name, guint state) {
+    static const struct {
+        const char *dom, *gdk;
+    } map[] = {{"Enter", "Return"},
+               {"Esc", "Escape"},
+               {"Backspace", "BackSpace"},
+               {"ArrowUp", "Up"},
+               {"ArrowDown", "Down"},
+               {"ArrowLeft", "Left"},
+               {"ArrowRight", "Right"},
+               {"PageUp", "Page_Up"},
+               {"PageDown", "Page_Down"},
+               {"Space", "space"},
+               {" ", "space"}};
+    size_t i;
+    guint kv;
+    if (g_utf8_strlen(name, -1) == 1) {
+        kv = gdk_unicode_to_keyval(g_utf8_get_char(name));
+        return state & GDK_SHIFT_MASK ? gdk_keyval_to_upper(kv) : kv;
+    }
+    for (i = 0; i < LENGTH(map); i++)
+        if (!strcmp(map[i].dom, name))
+            return gdk_keyval_from_name(map[i].gdk);
+    kv = gdk_keyval_from_name(name);
+    return kv == GDK_KEY_VoidSymbol ? 0 : kv;
+}
+
+static void sendkey(guint keyval, guint state, int down) {
+    GdkEvent *e = gdk_event_new(down ? GDK_KEY_PRESS : GDK_KEY_RELEASE);
+    GdkKeymap *km = gdk_keymap_get_for_display(gdk_display_get_default());
+    GdkSeat *seat = gdk_display_get_default_seat(gdk_display_get_default());
+    GdkKeymapKey *keys;
+    gint n;
+    e->key.window = g_object_ref(gtk_widget_get_window(view));
+    e->key.keyval = keyval;
+    e->key.state = state;
+    e->key.time = evtime += 8;
+    if (gdk_keymap_get_entries_for_keyval(km, keyval, &keys, &n) && n) {
+        e->key.hardware_keycode = keys[0].keycode;
+        e->key.group = (guint8)keys[0].group;
+        if (keys[0].level == 1)
+            e->key.state |= GDK_SHIFT_MASK;
+        g_free(keys);
+    }
+    gdk_event_set_device(e, gdk_seat_get_keyboard(seat));
+    sendev(e);
+}
+
+static void keydone(GObject *o, GAsyncResult *res, gpointer p) {
+    Req *r = p;
+    GError *err = NULL;
+    JSCValue *v = webkit_web_view_call_async_javascript_function_finish(
+                 WEBKIT_WEB_VIEW(o), res, &err),
+             *f;
+    char *focused = NULL, q[200];
+    static char buf[65536];
+    if (!err) {
+        f = jsc_value_object_get_property(v, "focused");
+        focused = jsc_value_to_json(f, 0);
+        g_object_unref(f), g_object_unref(v);
+    } else
+        g_error_free(err);
+    snprintf(buf, sizeof buf,
+             "{\"type\":\"key_sent\",\"key\":%s,\"focused\":%s}",
+             jq(q, sizeof q, r->key), focused ? focused : "null");
+    g_free(focused);
+    finish(r, buf);
+}
+
+static gboolean keyquery(gpointer p) {
+    Req *r = p;
+    r->timer = 0;
+    jscall(r, "active", "{}", keydone);
+    return FALSE;
+}
+
+static void keysend(Req *r) {
+    sendkey(r->keyval, r->state, 1);
+    sendkey(r->keyval, r->state, 0);
+    r->timer = g_timeout_add(60, keyquery, r);
+}
+
+static void keyfocused(GObject *o, GAsyncResult *res, gpointer p) {
+    Req *r = p;
+    GError *err = NULL;
+    JSCValue *v = webkit_web_view_call_async_javascript_function_finish(
+                 WEBKIT_WEB_VIEW(o), res, &err),
+             *f;
+    int ok = 0;
+    if (err) {
+        replyerr(r, "%s", err->message);
+        g_error_free(err);
+        return;
+    }
+    f = jsc_value_object_get_property(v, "focused");
+    ok = jsc_value_is_boolean(f) && jsc_value_to_boolean(f);
+    g_object_unref(f), g_object_unref(v);
+    if (!ok) {
+        replyerr(r, "focus_failed");
+        return;
+    }
+    keysend(r);
+}
+
+/* key NAME [--shift --ctrl --alt --meta] [--selector css] [--wait];
+ * enter and space are shortcuts */
+static void c_key(Req *r, Args *a) {
+    const char *name = a->argv[0][0] == 'e'   ? "Enter"
+                       : a->argv[0][0] == 's' ? " "
+                                              : pos(a, 0);
+    const char *sel = optstr(a, "selector");
+    char opts[8300], q[8200];
+    if (!name) {
+        replyerr(r, "key needs a key name");
+        return;
+    }
+    if (mode == PROMPT) {
+        replyerr(r, "the prompt has the keyboard");
+        return;
+    }
+    r->state = modstate(a);
+    r->keyval = keyvalof(name, r->state);
+    if (!r->keyval) {
+        replyerr(r, "unknown key: %s", name);
+        return;
+    }
+    snprintf(r->key, sizeof r->key, "%s", name);
+    r->wait = optflag(a, "wait");
+    if (sel) {
+        snprintf(opts, sizeof opts, "{\"_\":[],\"selector\":%s}",
+                 jq(q, sizeof q, sel));
+        jscall(r, "focus", opts, keyfocused);
+    } else
+        keysend(r);
+}
+
+/* type: a --submit with no form around the field presses Return */
+static void typedone(GObject *o, GAsyncResult *res, gpointer p) {
+    Req *r = p;
+    GError *err = NULL;
+    char *j;
+    JSCValue *v = webkit_web_view_call_async_javascript_function_finish(
+        WEBKIT_WEB_VIEW(o), res, &err);
+    if (err) {
+        replyerr(r, "%s", err->message);
+        g_error_free(err);
+        return;
+    }
+    j = jsc_value_to_json(v, 0);
+    if (j && strstr(j, "\"submit\":\"none\"") && mode != PROMPT) {
+        sendkey(GDK_KEY_Return, 0, 1);
+        sendkey(GDK_KEY_Return, 0, 0);
+    }
+    if (!j)
+        replyerr(r, "unserializable result");
+    else if (strstr(j, "\"type\":\"error\""))
+        reply(r, j);
+    else
+        finish(r, j);
+    g_free(j);
+    g_object_unref(v);
+}
+
+static void c_type(Req *r, Args *a) {
+    r->wait = optflag(a, "wait");
+    jsrun(r, "type", a, typedone);
 }
 
 /* commands. Every handler answers its request exactly once, through
@@ -927,6 +1517,213 @@ static void c_blockupdate(Req *r, Args *a) {
     g_free(out), g_free(err), g_free(path);
 }
 
+/* files: <dumpdir>/<pid>_<title>.<ext> unless --out gave a path */
+static const char *outpath(Req *r, const char *ext) {
+    const char *t = webkit_web_view_get_title(V);
+    char *dir, name[96];
+    size_t i = 0;
+    if (r->path[0])
+        return r->path;
+    for (; t && *t && i < 80; t++)
+        name[i++] = g_ascii_isalnum(*t) || strchr("._-", *t) ? *t : '_';
+    name[i] = 0;
+    if (!i)
+        strcpy(name, "page");
+    dir = expandhome(dumpdir);
+    g_mkdir_with_parents(dir, 0755);
+    snprintf(r->path, sizeof r->path, "%s/%d_%s.%s", dir, (int)getpid(), name,
+             ext);
+    g_free(dir);
+    return r->path;
+}
+
+static void snapdone(GObject *o, GAsyncResult *res, gpointer p) {
+    Req *r = p;
+    GError *err = NULL;
+    cairo_surface_t *s =
+        webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(o), res, &err);
+    double k = zoom() * gtk_widget_get_scale_factor(view);
+    const char *path;
+    char qp[4300], qu[4096], qt[4096], rect[128];
+    int w, h, ok;
+    if (err) {
+        replyerr(r, "%s", err->message);
+        g_error_free(err);
+        return;
+    }
+    if (r->w > 0 && r->h > 0) { /* crop, CSS px -> device px */
+        cairo_surface_t *c = cairo_image_surface_create(
+            CAIRO_FORMAT_ARGB32, (int)(r->w * k), (int)(r->h * k));
+        cairo_t *cr = cairo_create(c);
+        cairo_set_source_surface(cr, s, -r->x * k, -r->y * k);
+        cairo_paint(cr);
+        cairo_destroy(cr);
+        cairo_surface_destroy(s);
+        s = c;
+        snprintf(rect, sizeof rect,
+                 "{\"x\":%g,\"y\":%g,\"width\":%g,\"height\":%g}", r->x, r->y,
+                 r->w, r->h);
+    } else
+        strcpy(rect, "null");
+    w = cairo_image_surface_get_width(s);
+    h = cairo_image_surface_get_height(s);
+    path = outpath(r, r->fmt[0] == 'j' ? "jpg" : "png");
+    if (r->fmt[0] == 'j') {
+        GdkPixbuf *pb = gdk_pixbuf_get_from_surface(s, 0, 0, w, h);
+        char q[8];
+        snprintf(q, sizeof q, "%d", CLAMP(r->quality, 1, 100));
+        ok = pb && gdk_pixbuf_save(pb, path, "jpeg", NULL, "quality", q, NULL);
+        if (pb)
+            g_object_unref(pb);
+    } else
+        ok = cairo_surface_write_to_png(s, path) == CAIRO_STATUS_SUCCESS;
+    cairo_surface_destroy(s);
+    if (!ok) {
+        replyerr(r, "cannot write %s", path);
+        return;
+    }
+    replyf(
+        r,
+        "{\"type\":\"screenshot_result\",\"path\":%s,\"url\":%s,\"title\":%s,"
+        "\"format\":\"%s\",\"width\":%d,\"height\":%d,\"rect\":%s}",
+        jq(qp, sizeof qp, path), jq(qu, sizeof qu, webkit_web_view_get_uri(V)),
+        jq(qt, sizeof qt, webkit_web_view_get_title(V)), r->fmt, w, h, rect);
+}
+
+static void snapshot(Req *r) {
+    webkit_web_view_get_snapshot(V,
+                                 r->full ? WEBKIT_SNAPSHOT_REGION_FULL_DOCUMENT
+                                         : WEBKIT_SNAPSHOT_REGION_VISIBLE,
+                                 WEBKIT_SNAPSHOT_OPTIONS_NONE, NULL, snapdone,
+                                 r);
+}
+
+static double prop(JSCValue *o, const char *name) {
+    JSCValue *v = jsc_value_object_get_property(o, name);
+    double d = jsc_value_is_number(v) ? jsc_value_to_double(v) : 0;
+    g_object_unref(v);
+    return d;
+}
+
+/* the crop rectangle came back from auto.js */
+static void shotdone(GObject *o, GAsyncResult *res, gpointer p) {
+    Req *r = p;
+    GError *err = NULL;
+    JSCValue *v = webkit_web_view_call_async_javascript_function_finish(
+                 WEBKIT_WEB_VIEW(o), res, &err),
+             *rect, *e;
+    char *msg;
+    if (err) {
+        replyerr(r, "%s", err->message);
+        g_error_free(err);
+        return;
+    }
+    e = jsc_value_object_get_property(v, "error");
+    if (jsc_value_is_string(e)) {
+        msg = jsc_value_to_string(e);
+        replyerr(r, "%s", msg);
+        g_free(msg), g_object_unref(e), g_object_unref(v);
+        return;
+    }
+    g_object_unref(e);
+    rect = jsc_value_object_get_property(v, "rect");
+    if (jsc_value_is_object(rect)) {
+        r->x = prop(rect, "x");
+        r->y = prop(rect, "y");
+        r->w = prop(rect, "width");
+        r->h = prop(rect, "height");
+    }
+    g_object_unref(rect), g_object_unref(v);
+    snapshot(r);
+}
+
+/* screenshot [--format png|jpeg] [--quality N] [--rect x,y,w,h |
+ * --selector css | --text s] [--full] [--out PATH]: the viewport (or the
+ * whole document with --full) to a file */
+static void c_screenshot(Req *r, Args *a) {
+    const char *fmt = optstr(a, "format"), *out = optstr(a, "out");
+    snprintf(r->fmt, sizeof r->fmt, "%s",
+             fmt && !strcmp(fmt, "jpeg") ? "jpeg" : "png");
+    r->quality = (int)optnum(a, "quality", 85);
+    r->full = optflag(a, "full");
+    if (out)
+        snprintf(r->path, sizeof r->path, "%s", out);
+    if (optstr(a, "selector") || optstr(a, "text") || optstr(a, "rect"))
+        jsrun(r, "shot", a, shotdone);
+    else
+        snapshot(r);
+}
+
+static void jqg(GString *g, const char *s) {
+    g_string_append_c(g, '"');
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c == '"' || c == '\\')
+            g_string_append_printf(g, "\\%c", c);
+        else if (c == '\n')
+            g_string_append(g, "\\n");
+        else if (c == '\r')
+            g_string_append(g, "\\r");
+        else if (c == '\t')
+            g_string_append(g, "\\t");
+        else if (c < 0x20)
+            g_string_append_printf(g, "\\u%04x", c);
+        else
+            g_string_append_c(g, (char)c);
+    }
+    g_string_append_c(g, '"');
+}
+
+static void dumpdone(GObject *o, GAsyncResult *res, gpointer p) {
+    Req *r = p;
+    GError *err = NULL;
+    JSCValue *v = webkit_web_view_call_async_javascript_function_finish(
+                 WEBKIT_WEB_VIEW(o), res, &err),
+             *h;
+    char *html;
+    const char *path;
+    GString *g;
+    char qp[4300], qu[4096], qt[4096];
+    if (err) {
+        replyerr(r, "%s", err->message);
+        g_error_free(err);
+        return;
+    }
+    h = jsc_value_object_get_property(v, "html");
+    html = jsc_value_to_string(h);
+    g_object_unref(h), g_object_unref(v);
+    path = outpath(r, "html");
+    if (!g_file_set_contents(path, html, -1, NULL)) {
+        replyerr(r, "cannot write %s", path);
+        g_free(html);
+        return;
+    }
+    g = g_string_new(NULL);
+    g_string_append_printf(g,
+                           "{\"type\":\"dump_result\",\"path\":%s,\"bytes\":%"
+                           "zu,\"url\":%s,\"title\":%s",
+                           jq(qp, sizeof qp, path), strlen(html),
+                           jq(qu, sizeof qu, webkit_web_view_get_uri(V)),
+                           jq(qt, sizeof qt, webkit_web_view_get_title(V)));
+    if (r->full) {
+        g_string_append(g, ",\"html\":");
+        jqg(g, html);
+    }
+    g_string_append_c(g, '}');
+    reply(r, g->str);
+    g_string_free(g, TRUE);
+    g_free(html);
+}
+
+/* dump [--out PATH] [--stdout]: the live DOM to a file */
+static void c_dump(Req *r, Args *a) {
+    const char *out = optstr(a, "out");
+    if (out)
+        snprintf(r->path, sizeof r->path, "%s", out);
+    r->full = optflag(a, "stdout");
+    jscall(r, "dump", "{}", dumpdone);
+}
+
 static const struct command commands[] = {
     /* name          handler        boolean flags */
     {"open", c_open, ""},
@@ -965,14 +1762,31 @@ static const struct command commands[] = {
     /* auto.js */
     {"click", c_auto, "wait"},
     {"focus", c_auto, ""},
-    {"type", c_auto, "no-clear,submit,wait"},
-    {"input", c_auto, "no-clear,submit,wait"},
+    {"type", c_type, "no-clear,submit,wait"},
+    {"input", c_type, "no-clear,submit,wait"},
     {"select", c_auto, "no-mouse,no-scroll,no-focus"},
     {"select-clear", c_auto, ""},
     {"highlight", c_auto, "all,no-scroll"},
     {"clear-highlights", c_auto, ""},
     {"metrics", c_auto, ""},
     {"active", c_auto, ""},
+    {"screenshot", c_screenshot, "full"},
+    {"dump", c_dump, "stdout"},
+    /* synthesized input */
+    {"mouse-move", c_mousemove, "instant,shift,ctrl,alt,meta"},
+    {"mouse-up", c_mousemove, "less,more,instant,shift,ctrl,alt,meta"},
+    {"mouse-down", c_mousemove, "less,more,instant,shift,ctrl,alt,meta"},
+    {"mouse-left", c_mousemove, "less,more,instant,shift,ctrl,alt,meta"},
+    {"mouse-right", c_mousemove, "less,more,instant,shift,ctrl,alt,meta"},
+    {"mouse-click", c_mouseclick, "double,instant,wait,shift,ctrl,alt,meta"},
+    {"mouse-press", c_mousepress, "shift,ctrl,alt,meta"},
+    {"mouse-release", c_mousepress, "shift,ctrl,alt,meta"},
+    {"mouse-drag", c_mousedrag, "shift,ctrl,alt,meta"},
+    {"mouse-scroll", c_mousescroll, "less,more,shift,ctrl,alt,meta"},
+    {"mouse-hide", c_mousehide, ""},
+    {"key", c_key, "shift,ctrl,alt,meta,wait"},
+    {"enter", c_key, "shift,ctrl,alt,meta,wait"},
+    {"space", c_key, "shift,ctrl,alt,meta,wait"},
 };
 
 static void cmdreq(Req *r, const char *line) {
@@ -1682,6 +2496,7 @@ static void setup(void) {
     g_signal_connect(view, "notify::uri", G_CALLBACK(urichanged), NULL);
     g_signal_connect(view, "mouse-target-changed", G_CALLBACK(hover), NULL);
     g_signal_connect(view, "create", G_CALLBACK(create), NULL);
+    g_signal_connect(view, "context-menu", G_CALLBACK(ctxmenu), NULL);
     g_signal_connect(view, "decide-policy", G_CALLBACK(policy), NULL);
     g_signal_connect(webkit_web_view_get_inspector(WEBKIT_WEB_VIEW(view)),
                      "open-window", G_CALLBACK(inspectopen), NULL);

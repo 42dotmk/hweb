@@ -16,7 +16,7 @@ APPDIR  = $(HOME)/.local/share/applications
 all: hweb hweb-ext.so hwebc
 
 hweb: hweb.c history.c history.h config.h args.h auto.h
-	$(CC) $(CFLAGS) $(WKFLAGS) -o $@ hweb.c history.c $(WKLIBS)
+	$(CC) $(CFLAGS) $(WKFLAGS) -o $@ hweb.c history.c $(WKLIBS) -lm
 
 # auto.js as a C byte array (od is POSIX; a string literal this long
 # would trip -Woverlength-strings under -pedantic)

@@ -10,7 +10,13 @@ hws's overview are the tabs), a one-line status bar, and a `:`/`/` entry.
 Two source files:
 
 - `hweb.c` — the UI process: modes, keymap, command language, status
-  bar, events on stdout, commands from stdin.
+  bar, events on stdout, commands from stdin and the control socket.
+- `args.h` — the command tokenizer (shell-like quoting, `--flag` grammar)
+  used by every verb.
+- `auto.js` — the page-side automation library (isolated world `hweb`;
+  the makefile embeds it as `auto.h`), see *Automation* below.
+- `hwebc.c` — the control client: `hwebc VERB ARGS...` sends one command
+  line to a running window's socket and prints the JSON reply.
 - `history.c` — the visit log: `$XDG_DATA_HOME/hweb/history`, a flat
   append-only file of `url<TAB>title` lines (one per finished load, written
   once the title arrives), and `histmatch()`, which runs `histfilter` from
@@ -38,9 +44,10 @@ Suckless-style: everything is configured in `config.h` and compiled in.
 ## Build
 
 ```sh
-make            # ./hweb + ./hweb-ext.so (needs libwebkit2gtk41-devel; fzf at runtime)
-make install    # symlinks hweb into ~/.local/bin (the .so stays here), installs
-                # hweb.desktop and makes hweb the xdg default browser
+make            # ./hweb + ./hweb-ext.so + ./hwebc (needs libwebkit2gtk41-devel;
+                # fzf at runtime); auto.js -> auto.h on the way
+make install    # symlinks hweb and hwebc into ~/.local/bin (the .so stays
+                # here), installs hweb.desktop and makes hweb the xdg default
 make clean
 ```
 
@@ -51,9 +58,15 @@ is on because GTK3 deprecates half of itself.
 
 Verify under Xephyr, never on the live display unless you mean to open a
 window: `Xephyr :77 -screen 1000x700 &`, then
-`DISPLAY=:77 ./hweb https://httpbin.org/headers < fifo` and write commands
-to the fifo (e.g. `js document.body.innerText`) to see the effective headers
-in the `js` event on stdout.
+`DISPLAY=:77 ./hweb test/auto.html &` and drive it with `./hwebc` (point
+`XDG_RUNTIME_DIR` at a short scratch path for both so the test window's
+socket is kept apart from the live ones; socket paths are limited to 108
+bytes). `test/auto.html` is a fixture page with two same-text buttons, a
+React-style controlled input, a `<select>`, a contenteditable, an inner
+scroller, a form and a paragraph; it logs what the page saw into
+`window.LOG` (`hwebc js 'return LOG'`). The older way still works:
+`DISPLAY=:77 ./hweb URL < fifo` with commands written to the fifo, results
+as `result` events on stdout.
 
 ## Concepts
 
@@ -61,17 +74,41 @@ in the `js` event on stdout.
   to the page; entered by `i`, or automatically when an editable element
   gains focus, left with Escape), `hint` (after `f`/`F`/`gf`; typed hint
   letters filter the labels), `prompt` (the entry: `:cmd`, `/find`).
-- **Commands** — one text language used by the keymap, the `:` prompt and
-  stdin. `cmd()` in `hweb.c` is the whole list: `open`, `tab`, `private`
-  (a new private window), `back`,
-  `forward`, `reload`, `reload!`, `stop`, `quit`, `scroll DX DY`,
-  `scrollpage F`, `scrollto N`, `zoom +|-|N`, `find`, `findnext`,
-  `findprev`, `insert`, `normal`, `hint open|new|yank|download`, `js CODE`,
-  `inject FILE`, `inspect`, `yank [URL]`, `download [URL]` (to
-  `downloaddir`; the page itself without URL), `prompt TEXT`, `echo`, `title`,
-  `blockupdate` (runs the `blockupdate` shell snippet from `config.h`,
-  which refetches the blocklist, and shows its output).
+- **Commands** — one text language used by the keymap, the `:` prompt,
+  stdin and the control socket. `commands[]` in `hweb.c` is the whole
+  list (one handler per verb, taking the request and the parsed `Args`);
+  `:` completion reads it. A line is tokenized shell-style by `args.h`
+  (`"..."` keeps spaces, `--flag value`, `--flag=value`, boolean flags
+  declared per verb in the table), except for the *raw* verbs whose
+  argument is the rest of the line verbatim: `open`, `tab`, `private`,
+  `js`, `inject`, `yank`, `download`, `prompt`, `echo`, `find`.
+  Browser verbs: `open [URL|query]` (this window), `nav URL [--wait]`
+  (same, tokenized), `tab`/`private [URL]` (a new window, replies its
+  pid), `back`/`forward [--steps N] [--wait]`, `reload`, `reload!`,
+  `stop`, `quit`/`close`, `scroll DX DY` (keymap steps) or chrome-dumper's
+  `scroll [up|down] [--pages F] [--pixels N] [--to top|bottom|css]
+  [--no-smooth]`, `scrollpage F`, `scrollto N`, `zoom [PCT] | + | - |
+  --in [PCT] | --out [PCT] | --reset` (numbers are percent: `zoom 100`),
+  `find`, `findnext`, `findprev`, `insert`, `normal`, `hint
+  open|new|yank|download`, `js CODE` (an expression, or a function body
+  when it contains `return`; a returned promise is awaited), `inject
+  FILE`, `inspect`, `yank [URL]`, `download [URL]` (to `downloaddir`; the
+  page itself without URL), `prompt TEXT`, `echo`, `title`, `info`,
+  `resize WxH`, `blockupdate` (runs the `blockupdate` shell snippet from
+  `config.h`, which refetches the blocklist, and shows its output). The
+  automation verbs are listed under *Automation*.
   Keymap commands expand `%u` (url), `%t` (title), `%c` (clipboard).
+- **Requests and replies** — every command answers exactly once with one
+  JSON object, `{"type":"clicked",...}` or `{"type":"error","error":...}`
+  (`Req` in `hweb.c`: a small pool; async work — js, snapshots, a
+  navigation wait — completes it later). Where the reply goes depends on
+  who asked: a socket client gets it as its one reply line; a command
+  read from stdin gets it as a `result JSON` event; keymap and `:` prompt
+  commands get nothing (errors show in the status bar). `--wait` on
+  nav/back/forward/reload/click/type/key/mouse-click holds the reply for
+  the navigation the action starts: a load must begin within 300 ms
+  (else `"loaded":false`) and finish within 30 s; the reply then carries
+  `loaded`, `url` and, on failure, `failed`.
 - **Completion** — Tab in the `:` prompt: on a (partial) verb it lists the
   commands, after `:open `/`:tab ` it lists fuzzy history matches for the
   typed text (`compmax` rows at a time, above the entry). Tab/Shift-Tab
@@ -82,11 +119,80 @@ in the `js` event on stdout.
   `webkit.messageHandlers.hweb.postMessage(...)`), `new`, `popup`, `yank`, `inject`,
   `download started|finished`, `permission media [audio] [video] [display]`
   (a granted getUserMedia request), `blocked URL` (a request cancelled by the
-  blocklist), `blockupdate OUTPUT`. When stdin is not a tty each line read from
-  it is run as a command, so `hweb URL < cmds > events` scripts the browser.
+  blocklist), `blockupdate OUTPUT`, `result JSON` (the reply to a command
+  read from stdin). Newlines and backslashes in a payload are escaped
+  (`\n`, `\\`) so an event is always one line; unescape after splitting.
+  When stdin is not a tty each line read from it is run as a command, so
+  `hweb URL < cmds > events` scripts the browser.
+- **Control socket** — every window listens on
+  `$XDG_RUNTIME_DIR/hweb/<pid>.sock` (fallback `/tmp/hweb-<uid>/`): one
+  request line per connection, one JSON reply line back, then close.
+  Sockets of dead pids are swept by whoever looks at the directory. `hwebc`
+  is the client: `hwebc [--win PID] [--timeout S] VERB ARGS...` (the shell
+  words are re-quoted for `args.h`, raw verbs are joined verbatim; a
+  relative `--out` for screenshot/dump is made absolute), `hwebc windows`
+  (every window's `info`), `hwebc < script` (one command per line). Without
+  `--win`/`$HWEB_WIN` it targets the focused window, else the most recently
+  focused (`info` reports `focused` and `active`), else the only one.
+  `hwebc open URL` with no window running starts hweb. Exit status 0 ok,
+  1 error reply, 2 usage/no window, 3 unreachable.
+- **Automation** — chrome-dumper's command surface, the same grammar and
+  reply shapes, so its scripts and agent workflow port with `uv run
+  dumper` → `hwebc` (no tabs: a window is a process, `tabId` is gone,
+  `open` keeps hweb's meaning and `tab URL` is the new-window verb; `tab`
+  as a key is `key Tab`). Two halves:
+  - `auto.js` (isolated world `hweb`, `__hweb.auto.run(verb, opts)`,
+    called through `webkit_web_view_call_async_javascript_function` with
+    the parsed command line as JSON: positionals in `_`, flags by name)
+    does the DOM work: `click [--selector css | --text s] [--nth N]
+    [--wait]` (text matches skip invisible elements; `el.click()` after
+    focusing), `focus`, `type VALUE [--selector | --placeholder | --label]
+    [--nth N] [--no-clear] [--submit] [--wait]` (`input` is an alias;
+    `<select>` picks an option by value or text; contenteditable via
+    `execCommand insertText`; `--submit` submits the form or, without one,
+    presses a real Return), `select --selector | --text | --from --to |
+    --rect x1,y1,x2,y2 [--no-mouse --no-scroll --no-focus]`,
+    `select-clear`, `scroll` (see above; finds the real scroll container
+    and waits for it to settle), `highlight --selector | --text | --rect
+    x,y,w,h [--all] [--nth N] [--color #hex] [--label s] [--duration MS]
+    [--no-scroll]` (boxes follow their element through scrolling),
+    `clear-highlights`, `dump [--out PATH] [--stdout]` (live DOM without
+    our overlays to `dumpdir`), `metrics` (viewport, scroll, dpr),
+    `active` (the focused element).
+  - Real input: `mouse-move X Y`, `mouse-up|down|left|right [N] [--less |
+    --more]` (nudges), `mouse-click X Y [--button left|right|middle]
+    [--count N | --double] [--wait]`, `mouse-press`/`mouse-release [X Y]`,
+    `mouse-drag X1 Y1 X2 Y2 [--steps N]`, `mouse-scroll [up|down|left|right]
+    [N] [--less | --more] [--at X Y]`, `mouse-hide`, `key NAME [--selector
+    css] [--wait]`, `enter`, `space`, all with `--shift --ctrl --alt
+    --meta`, and `mouse-move`/`mouse-click` with `--instant` or `--duration
+    MS`. These build GdkEvents and hand them to the web view with
+    `gtk_widget_event()`, the path real input takes, so the page sees
+    trusted events, `:hover`, native scrolling, Tab focus traversal and
+    Return submitting forms. Coordinates are CSS px (widget px = CSS px ×
+    zoom); the pointer is virtual — the X pointer never moves — so
+    `auto.js` draws a cursor for it, and the moves glide along an eased
+    curve like a hand would. Mouse replies carry `target`, the element
+    under the point, so a caller can check what it hit. A synthetic right
+    click reaches the page but WebKit's own context menu is suppressed.
+    WebKit scrolls 11% of the view height (at least 40 px) per smooth
+    wheel unit; `mouse-scroll N` converts px accordingly and reports the
+    resulting `scrollX`/`scrollY`.
+  - `screenshot [--format png|jpeg] [--quality N] [--rect x,y,w,h |
+    --selector css | --text s] [--full] [--out PATH]` snapshots the
+    viewport, or the whole document with `--full` (which Chrome cannot),
+    crops in device px, and writes `dumpdir/<pid>_<title>.png` (or `--out`);
+    the reply has the path, never image data.
+  The agent loop chrome-dumper documents works unchanged: `screenshot`,
+  read the image, estimate the target as fractions of the picture, scale
+  by `metrics`' `innerWidth`/`innerHeight`, `mouse-click X Y`, check
+  `target` in the reply, `dump` to read the result.
 - **Injection** — `corejs` (isolated world `hweb`, document start) is the
   insert-mode detector and hint machinery, reached from C via
-  `js("hweb", ...)`. Every `*.js` in `scriptdir` is injected into
+  `js("hweb", ...)`; `auto.js` follows it into the same world and reuses
+  its `H.vis`/`H.ed`. The isolated world shares the page's DOM but not its
+  JS globals, which is why a plain `el.value =` there already bypasses a
+  React value tracker. Every `*.js` in `scriptdir` is injected into
   every page at document end, page world; `inject FILE` adds one at
   runtime (and runs it now). `js CODE` evaluates in the page world.
 - **Debugging** — `gd` / `:inspect` toggles the WebKit inspector
