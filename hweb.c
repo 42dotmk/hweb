@@ -36,6 +36,9 @@ static GtkWidget *win, *view, *status, *modelbl, *urllbl, *entry, *complbl;
 static WebKitUserContentManager *ucm;
 static enum mode mode = NORMAL;
 static int private; /* HWEB_PRIVATE: ephemeral storage, no history writes */
+/* HWEB_PROFILE: the data directory (cookies, storage, history; cache under
+ * it) — -P DIR; empty means the default $XDG_DATA_HOME/hweb */
+static char profile[4096];
 static char pending[64];
 static int inspecting;
 static char *hoveruri;
@@ -334,8 +337,11 @@ static void setstatus(const char *msg) {
 }
 
 static void updatemode(void) {
-    char buf[96];
-    snprintf(buf, sizeof buf, "%s%s%s%s", private ? "[private] " : "",
+    char buf[256];
+    const char *name = strrchr(profile, '/');
+    name = name ? name + 1 : profile;
+    snprintf(buf, sizeof buf, "%s%.64s%s%s%s%s%s", *name ? "[" : "", name,
+             *name ? "] " : "", private ? "[private] " : "",
              mode == NORMAL ? "" : "-- ",
              mode == NORMAL ? pending : modename[mode],
              mode == NORMAL ? "" : " --");
@@ -1468,17 +1474,17 @@ static void c_info(Req *r, Args *a) {
     const char *t = webkit_web_view_get_title(V),
                *u = webkit_web_view_get_uri(V);
     double z = webkit_web_view_get_zoom_level(V);
-    char qt[4096], qu[4096];
+    char qt[4096], qu[4096], qp[4096];
     (void)a;
     replyf(r,
            "{\"type\":\"info\",\"pid\":%d,\"url\":%s,\"title\":%s,"
-           "\"focused\":%s,\"active\":%lld,\"private\":%s,\"zoom\":%d,"
-           "\"mode\":\"%s\",\"width\":%d,\"height\":%d}",
+           "\"focused\":%s,\"active\":%lld,\"private\":%s,\"profile\":%s,"
+           "\"zoom\":%d,\"mode\":\"%s\",\"width\":%d,\"height\":%d}",
            (int)getpid(), jq(qu, sizeof qu, u ? u : ""),
            jq(qt, sizeof qt, t ? t : ""),
            gtk_window_is_active(GTK_WINDOW(win)) ? "true" : "false",
            (long long)lastactive, private ? "true" : "false",
-           (int)(z * 100 + 0.5), modename[mode],
+           jq(qp, sizeof qp, profile), (int)(z * 100 + 0.5), modename[mode],
            (int)(gtk_widget_get_allocated_width(view) / z),
            (int)(gtk_widget_get_allocated_height(view) / z));
 }
@@ -2419,8 +2425,12 @@ static gboolean usermessage(WebKitWebView *v, WebKitUserMessage *m,
 }
 
 static WebKitWebContext *context(void) {
-    char *data = g_build_filename(g_get_user_data_dir(), "hweb", NULL);
-    char *cache = g_build_filename(g_get_user_cache_dir(), "hweb", NULL);
+    char *data = profile[0]
+                     ? g_strdup(profile)
+                     : g_build_filename(g_get_user_data_dir(), "hweb", NULL);
+    char *cache = profile[0]
+                      ? g_build_filename(profile, "cache", NULL)
+                      : g_build_filename(g_get_user_cache_dir(), "hweb", NULL);
     char *cookies = g_build_filename(data, "cookies.sqlite", NULL);
     WebKitWebsiteDataManager *dm =
         private ? webkit_website_data_manager_new_ephemeral()
@@ -2575,13 +2585,26 @@ int main(int argc, char *argv[]) {
         puts("hweb " HWEB_VERSION);
         return 0;
     }
-    /* the env carries privateness to t/T/F-spawned windows, so windows
-     * opened from a private window are private too; -p sets it for both
-     * this process and, via setenv, its children */
+    /* the env carries privateness and the profile to t/T/F-spawned
+     * windows, so windows opened from a private window are private too and
+     * stay in the same profile; -p/-P set them for both this process and,
+     * via setenv, its children */
     private = getenv("HWEB_PRIVATE") != NULL;
-    if (argc > 1 && !strcmp(argv[1], "-p")) {
-        private = 1;
-        setenv("HWEB_PRIVATE", "1", 1);
+    if (getenv("HWEB_PROFILE"))
+        snprintf(profile, sizeof profile, "%s", getenv("HWEB_PROFILE"));
+    while (argc > 1 && argv[1][0] == '-' && argv[1][1] && !argv[1][2]) {
+        if (argv[1][1] == 'p') {
+            private = 1;
+            setenv("HWEB_PRIVATE", "1", 1);
+        } else if (argv[1][1] == 'P' && argc > 2) {
+            char *p = expandhome(argv[2]),
+                 *abs = g_canonicalize_filename(p, NULL);
+            snprintf(profile, sizeof profile, "%s", abs);
+            setenv("HWEB_PROFILE", profile, 1);
+            g_free(p), g_free(abs);
+            argv++, argc--;
+        } else
+            break;
         argv++, argc--;
     }
     g_set_prgname("hweb");

@@ -183,10 +183,13 @@ class Window:
         return "Window(%d)" % self.pid
 
     @classmethod
-    def open(cls, url="", private=False, timeout=60.0, wait=10.0):
-        """start a new hweb process showing url and return its Window"""
+    def open(cls, url="", private=False, profile=None, timeout=60.0,
+             wait=10.0):
+        """start a new hweb process showing url and return its Window;
+        profile is a data directory (hweb -P DIR), None the default one"""
         before = set(_pids())
-        argv = ["hweb"] + (["-p"] if private else []) + ([url] if url else [])
+        argv = (["hweb"] + (["-p"] if private else []) +
+                (["-P", profile] if profile else []) + ([url] if url else []))
         if not shutil.which("hweb"):
             raise Unreachable("hweb not in PATH")
         subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

@@ -216,9 +216,17 @@ as `result` events on stdout.
   same process (`create()` in `hweb.c`: a bare webview, no status bar or
   keymap, closes on `window.close()`), so OAuth popups can reach
   `window.opener`/`postMessage` and hand their result back.
-- **State** lives in `$XDG_DATA_HOME/hweb` (cookies.sqlite, storage) and
-  `$XDG_CACHE_HOME/hweb`; third-party cookies are refused. Downloads go to
-  `downloaddir` when a response's mime type cannot be shown.
+- **State** lives in `$XDG_DATA_HOME/hweb` (cookies.sqlite, storage,
+  history) and `$XDG_CACHE_HOME/hweb`; third-party cookies are refused.
+  Downloads go to `downloaddir` when a response's mime type cannot be shown.
+- **Profiles** — `hweb -P DIR [URL]` (or `HWEB_PROFILE=DIR`) keeps all of
+  that state in `DIR` instead (cache under `DIR/cache`), so two windows in
+  different directories are two separate browsers: their own cookies,
+  logins, storage and history. `-P` canonicalizes the path (`~` expands),
+  creates it, setenvs `HWEB_PROFILE` so spawned windows stay in the same
+  profile, shows `[basename]` in the status bar, and `info` reports
+  `profile` (empty for the default). `-p` and `-P` combine.
+  `hweb.Window.open(url, profile=DIR)` from Python.
 - **Private browsing** — `hweb -p [URL]`, `HWEB_PRIVATE=1 hweb`, the
   `private [URL]` command, or super+shift+b (`<D-B>` in `keys[]`; `<D-x>`
   is the super/cmd chord token, case kept so shift matters):
